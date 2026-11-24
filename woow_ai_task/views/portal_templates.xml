@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Portal task page (/my/tasks/<id>, /my/projects/<project>/task/<id>): the customer AI chat, only for a
+         logged-in user who can read the task when the project has a customer AI assistant (controllers/portal.py).
+         The conversation is Odoo's Discuss page, embedded; it is opened (created or joined) on demand. -->
+    <template id="portal_my_task_woow_project_ai" name="Task: Customer AI Chat" inherit_id="project.portal_my_task">
+        <xpath expr="//li[@id='nav-chat']" position="before">
+            <li t-if="woow_project_ai_customer_chat" class="nav-item" id="nav-woow-project-ai">
+                <a class="nav-link p-0" href="#woow_project_ai_chat">Customer AI Chat</a>
+            </li>
+        </xpath>
+        <xpath expr="//div[@id='task_chat']" position="before">
+            <div t-if="woow_project_ai_customer_chat" id="woow_project_ai_chat" data-anchor="true"
+                 class="o_woow_project_ai_portal mb-4" t-att-data-member="'1' if woow_project_ai_chat_member else '0'">
+                <h3>Customer AI Chat</h3>
+                <p class="text-muted small mb-2">
+                    Ask our AI assistant about this task, at any time. Your messages and files are also visible to
+                    our team and to the other people who can see this task.
+                </p>
+                <!-- a link: without JavaScript (or before it starts) it opens the full page in a new tab;
+                     static/src/portal/task_ai_chat.js shows the conversation here instead -->
+                <div class="o_woow_project_ai_portal_start">
+                    <a t-att-href="woow_project_ai_chat_full_url" target="_blank" rel="noopener"
+                       class="btn btn-primary o_woow_project_ai_portal_open">
+                        <i class="fa fa-comments me-1" role="img" aria-hidden="true"/> Open the AI chat
+                    </a>
+                </div>
+                <iframe class="o_woow_project_ai_portal_frame w-100 border rounded d-none"
+                        t-att-data-src="woow_project_ai_chat_url" title="Customer AI Chat"/>
+                <div class="mt-1 small">
+                    <a t-att-href="woow_project_ai_chat_full_url" target="_blank" rel="noopener">
+                        <i class="fa fa-external-link me-1" role="img" aria-hidden="true"/>Open in a new tab
+                    </a>
+                </div>
+                <hr/>
+            </div>
+        </xpath>
+    </template>
+</odoo>

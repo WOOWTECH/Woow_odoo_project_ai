@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <!-- Task AI conversations: members follow the task access, so the member panel offers no invitation -->
+    <t t-inherit="discuss.ChannelMemberList" t-inherit-mode="extension">
+        <xpath expr="//button[contains(@t-on-click, 'openChannelInvitePanel')]" position="attributes">
+            <attribute name="t-if">!props.thread.woow_project_ai_tab</attribute>
+        </xpath>
+    </t>
+    <!-- ... and the task manages the conversation's avatar (members change only the name and description) -->
+    <t t-inherit="mail.Discuss" t-inherit-mode="extension">
+        <xpath expr="//FileUploader" position="attributes">
+            <attribute name="t-if">!thread.parent_channel_id and thread.is_editable and thread.channel_type !== 'chat' and !thread.woow_project_ai_tab</attribute>
+        </xpath>
+    </t>
+</templates>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_task_form2_woow_project_ai" model="ir.ui.view">
+        <field name="name">project.task.form.woow_ai_task</field>
+        <field name="model">project.task</field>
+        <field name="inherit_id" ref="project.view_task_form2"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <!-- opening a page creates (the first time) or joins the conversation: static/src/backend -->
+                <page string="Internal AI Chat" name="woow_project_ai_internal_chat" groups="base.group_user"
+                      invisible="not id or not woow_project_ai_internal_available">
+                    <field name="woow_project_ai_internal_available" invisible="1"/>
+                    <widget name="woow_project_ai_task_chat" options="{'tab': 'internal'}"/>
+                </page>
+                <page string="Customer AI Chat" name="woow_project_ai_customer_chat" groups="base.group_user"
+                      invisible="not id or not woow_project_ai_customer_available">
+                    <field name="woow_project_ai_customer_available" invisible="1"/>
+                    <widget name="woow_project_ai_task_chat" options="{'tab': 'customer'}"/>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

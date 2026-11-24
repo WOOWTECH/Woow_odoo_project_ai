@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+        <!-- A task AI conversation can be read (and written) only while the current user can read its task, by
+             Odoo's own rules (internal conversations: employees only). A member who lost the access is still
+             listed until the next membership sync, but reads nothing any more. Global: everybody, administrators
+             included. Every other channel: unchanged, for every user (woow_project_ai_task_id is empty, the
+             domain is true there: models/discuss_channel.py _woow_project_ai_readable_domain). -->
+        <record id="rule_discuss_channel_woow_project_ai" model="ir.rule">
+            <field name="name">Project AI task chat: only people who can read the task</field>
+            <field name="model_id" ref="mail.model_discuss_channel"/>
+            <field name="domain_force">[('woow_project_ai_readable', '=', True)]</field>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="False"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+    </data>
+</odoo>

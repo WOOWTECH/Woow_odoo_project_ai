@@ -1,0 +1,17 @@
+# -*- coding: utf-8 -*-
+from . import ai_assistant
+from . import ai_assistant_backend
+from . import ai_assistant_reply
+from . import ai_connection
+from . import ai_call_log
+from . import ai_usage
+from . import ai_job
+from . import push_key_wizard
+from . import project_project
+from . import project_task
+from . import discuss_channel
+from . import discuss_channel_member
+from . import mail_message
+from . import project_collaborator
+from . import res_partner
+from . import res_users
