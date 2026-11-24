@@ -14,6 +14,8 @@ from . import discuss_channel_member
 from . import mail_thread
 from . import mail_message
 from . import mail_mail
+from . import mail_compose_message
+from . import mail_thread_main_attachment
 from . import mail_link_preview
 from . import rating_rating
 from . import ir_attachment

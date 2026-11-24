@@ -20,6 +20,7 @@ AI (`im_livechat_ai`) without sharing anything with them.
 | `woow_ai_task_portal_discuss` | 18.0.1.0.0 | Bridge, installed automatically with `woow_odoo_portal_discuss`: task chats stay out of `/my/discussions`, its tabs and its card |
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows; the unread messages of the customer's task AI chats get their own notice and `/my` card, which open the task page |
 | `woow_ai_task_snailmail` | 18.0.1.0.0 | Bridge, installed automatically with `snailmail` (which Odoo installs with `mail`): a file of a task AI chat is never put in a letter |
+| `woow_ai_task_document_management` | 18.0.1.0.0 | Bridge, installed automatically with `woow_document_management`: a filing rule never copies a file of a task AI chat into a document folder |
 
 ## Features
 
@@ -85,7 +86,7 @@ AI (`im_livechat_ai`) without sharing anything with them.
 
 ## Install
 
-1. Put this whole repository on the addons path: the three bridges must be
+1. Put this whole repository on the addons path: the four bridges must be
    there too, so that Odoo installs them with the modules they bridge.
 2. Install *Project AI* (`woow_ai_task`). It depends on `project`, `mail`,
    `portal`, `bus` and `web`; zh_TW translations included.
@@ -116,7 +117,7 @@ longest connection timeout, plus 60 s.
   again shortly.
 - A threaded cron process needs `db_maxconn` >= both modules' concurrency + 6.
 
-## Once installed: keep the four modules in every image
+## Once installed: keep the five modules in every image
 
 The module adds a **global record rule on `discuss.channel`** whose domain
 uses one of its computed fields, plus views and crons. Every image that
@@ -124,10 +125,10 @@ serves the database must therefore contain `woow_ai_task` as long as it is
 installed: without its code, every non-superuser channel read fails (Discuss,
 Live Chat and portal chats break site-wide).
 
-Ship the four modules together, in every image (rollback images included):
+Ship the five modules together, in every image (rollback images included):
 for paas-odoo-ci, `addons-sources.py sync --modules
-woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail`
-and the same four names in `paas-addons.list` and `cloud-addons.list`. Odoo
+woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail,woow_ai_task_document_management`
+and the same five names in `paas-addons.list` and `cloud-addons.list`. Odoo
 installs a bridge by itself only while one of its dependencies is being
 installed; `-u`, `-u all` and *Update Apps List* never install a new module.
 So when a bridge reaches a database after `woow_ai_task` and the portal
@@ -135,7 +136,8 @@ module it bridges are both installed, install it explicitly (it is
 harmless): `-i woow_ai_task_portal_discuss` where `woow_odoo_portal_discuss`
 is installed, `-i woow_ai_task_portal_notification` where
 `woow_portal_notification_discuss` is, `-i woow_ai_task_snailmail` where
-`snailmail` is (or from Apps). Never install a bridge
+`snailmail` is, `-i woow_ai_task_document_management` where
+`woow_document_management` is (or from Apps). Never install a bridge
 where its other side is missing: that would install the other side too.
 
 Module operations from Apps or `odoo shell` (install, upgrade, uninstall:
@@ -153,9 +155,10 @@ hook first switches the global rule off, removes the people from the task
 chats (the AI bots stay) and archives the chats (history kept, readable by
 system administrators); Odoo then deletes the module's records (the rule
 first) and only after that its fields and tables. Uninstalling it also
-uninstalls its three bridges (`woow_ai_task_portal_discuss`,
-`woow_ai_task_portal_notification`, `woow_ai_task_snailmail`): they hold
-nothing but their code and one portal card, so there is nothing to restore. Only a module that depends
+uninstalls its four bridges (`woow_ai_task_portal_discuss`,
+`woow_ai_task_portal_notification`, `woow_ai_task_snailmail`,
+`woow_ai_task_document_management`): they hold nothing but their code and
+one portal card, so there is nothing to restore. Only a module that depends
 on it and must stay installed (for example the PaaS platform, should it
 come to depend on it) blocks the uninstall: then forward-fix, or restore
 the database and filestore snapshot taken before the upgrade.
@@ -176,8 +179,12 @@ the module's tables are missing can still be neutralized.
 - Task chats are private group conversations: members read them, only while
   they can read the task now (the internal chat: and its project); so do
   system administrators who can read the task (Odoo's administrator rule on
-  channels), without being listed as members. Notifications (web push,
-  mentions) only reach people who can read the task. Odoo keeps a
+  channels), without being listed as members. Anyone else reads nothing of a
+  chat they are not in (Odoo lets them read a group chat only as members): a
+  member who leaves (Odoo's Leave) reads it no more, and their unread
+  mentions there are marked read. Notifications (web push, mentions) only
+  reach members who can read the task; a mention never adds anyone to a
+  chat. Odoo keeps a
   websocket's channels from its last subscribe and its client does not
   re-subscribe when a member is removed, so every bus poll leaves out the
   task chats the polling user cannot read now: a removed member's open page
@@ -192,24 +199,37 @@ the module's tables are missing can still be neutralized.
   http/https/mailto, files are downloaded only from allowlisted hosts with a
   size and time limit (a host that trickles its bytes is cut at the
   deadline), and their type is detected from the content.
-- Reading a task chat message: Odoo reads messages with sudo wherever it
-  does not call `read` (copies, exports through any model, the values an
-  onchange computes, delegated fields, template rendering). The module's one
-  read check sits where all of them meet (`mail.message.fetch`): outside
-  superuser, a message of a task chat is read only by someone who can read
-  that chat now (its task, and for the internal chat the projects whose
-  internal text it used), whatever way its id arrived; searches leave those
-  messages out too (Odoo lets their authors and notified partners find
-  them, and the Inbox counter drops their unread mentions once they lose the
-  chat). For other people a task chat message's name (shown with sudo where
-  a record links it) is "Task AI chat", a task chat file's name is "Task AI
-  chat file", and its content read with sudo through another model
-  (snailmail's letter, in an onchange too) is empty, also in a request
-  without a user. Settings > Technical > Emails leaves out the mails of
-  messages its reader cannot read. The rule of the task chats a user may
-  read is compiled once per transaction (again after a group or an access
-  change) and evaluated by PostgreSQL for task chats only; which channels
-  are task chats is kept per process for channels that exist only.
+- Reading a task chat message or file: Odoo reads messages with sudo
+  wherever it does not call `read` (copies, exports through any model, the
+  values an onchange computes, delegated fields, template rendering), and
+  other models read them as superuser through their related and stored
+  computed fields (mail_group's message fields, the full composer's
+  parent-derived fields, hr_expense's main-attachment checksum, snailmail's
+  letter), in an onchange too. The module's read check sits where all of
+  them meet, the read from the database (`_fetch_query`), and it applies as
+  superuser too whenever the environment acts for a real user (`env.uid`):
+  the content of a task chat message (body, subject, files, recipients,
+  author, name...) is read only for someone who can read that chat now (its
+  task, and for the internal chat the projects whose internal text it
+  used), whatever way its id arrived; so is the content of a task chat file
+  (name, data, checksum, size, type, token). What Odoo's record rules and
+  access checks read as superuser (where a message or a file belongs, its
+  type, who and when) stays readable, and a rule check never brings the
+  content into the cache. The full composer refuses a parent message its
+  user cannot read. Searches leave those messages out too (Odoo lets their
+  authors and notified partners find them, and the Inbox counter drops their
+  unread mentions once they lose the chat); so do the failures Odoo shows an
+  author. For other people a task chat message's name (shown with sudo
+  where a record links it) is "Task AI chat", a task chat file's name is
+  "Task AI chat file", and its content read through another model is empty,
+  also in a request without a user. Settings > Technical > Emails leaves out
+  the mails of messages its reader cannot read. The task chats a user may
+  read: for a system administrator a sub-query compiled once per
+  transaction that PostgreSQL evaluates once per statement, and only when a
+  task chat is met; for anyone else the list of their own member task chats
+  they may read, computed once per transaction (one indexed query; again
+  after a join, a leave, a group or an access change). Which channels are
+  task chats is kept per process for channels that exist only.
 - Links, checked on the rows as stored (any id type, any command shape;
   superuser included unless Odoo itself needs it): no message anywhere gets a
   task chat message as its parent unless it is in that chat; a task chat's
@@ -226,10 +246,16 @@ the module's tables are missing can still be neutralized.
   chat only by posting it there, superuser included (Odoo's own notices
   and the AI's answers post; the mass-mail composer cannot put a message
   there); reactions come only from members who may read the chat; no
-  rating is linked to a task chat message. Mentioning a colleague who may
-  be in a task chat but has not opened its tab adds them to it (as the tab
-  would; muted in a customer chat): Odoo shows a mention in the recipient's
-  own environment, where only members read the chat.
+  rating is about a task chat or one of its messages, and a post in a task
+  chat takes no rating (Odoo's public rating route would post one as
+  superuser); outside superuser nobody writes a task chat message directly
+  (Odoo pins in SQL and stars on the partner's side); a task chat file is
+  never the main attachment of another document (invoices, expenses: Odoo's
+  own setter runs as superuser with the record's own files), and a document
+  filing rule (woow_document_management) never copies one into a folder,
+  for new files nor in its backfill. A mention reaches the members of the
+  chat only (and the AI bots): mentioning someone else posts the message
+  without notifying them, adds nobody and lets nobody else read it.
 - Roles that can read everything anyway: system administrators (code,
   rules), Mail Template Editors (a template may call `.sudo()`); Access
   Rights administrators can grant themselves anything.

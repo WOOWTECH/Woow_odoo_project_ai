@@ -156,7 +156,8 @@ class TestDelta2Review(Delta2Helpers, AiTaskFixtures, TransactionCase):
                 {'child_ids': {'fields': {'starred_message_ids': {'fields': {'letter_ids': {'fields': {
                     'attachment_datas': {}}}}}}}})
 
-        # a colleague who may read the chat gets the content: the payloads do read it
+        # a colleague who reads the chat (a member) gets the content: the payloads do read it
+        self.open_tab(self.staff2, 'internal')
         self.assertIn(content.decode(), str(letter(self.staff2)).replace("b'", "'"))
         for user in (self.employee, self.rights_admin):
             with self.subTest(user=user.login):
@@ -260,6 +261,7 @@ class TestDelta2Review(Delta2Helpers, AiTaskFixtures, TransactionCase):
         export = self.env.ref('base.group_allow_export')
         (self.staff | self.staff2 | self.employee).write({'groups_id': [Command.link(export.id)]})
         internal, secret = self.secret_message()
+        self.open_tab(self.staff2, 'internal')  # a mention reaches members only
         # a mention: notification rows that every employee can read
         mention = internal.with_user(self.staff).sudo().message_post(
             body='%s, @Tina?' % SECRET, message_type='comment', subtype_xmlid='mail.mt_comment',
@@ -367,6 +369,7 @@ class TestDelta2Review(Delta2Helpers, AiTaskFixtures, TransactionCase):
 
     def test_11_chat_message_names_for_non_readers(self):
         internal, _secret = self.secret_message()
+        self.open_tab(self.staff2, 'internal')  # a mention reaches members only
         internal.with_user(self.staff).sudo().message_post(
             body='@Tina, look', message_type='comment', subtype_xmlid='mail.mt_comment',
             partner_ids=self.staff2.partner_id.ids)

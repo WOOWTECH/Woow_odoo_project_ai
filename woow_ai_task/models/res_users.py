@@ -10,18 +10,19 @@ USER_ACCESS_FIELDS = {'groups_id', 'active', 'company_ids', 'company_id', 'share
 class ResUsers(models.Model):
     _inherit = 'res.users'
 
-    # the module's rule for this user, compiled (discuss.channel._woow_project_ai_readable_sql_of: the SQL of
-    # the task AI chats they may read, and the fields it reads; the data is read at each use): never stored,
-    # compiled once per transaction and kept in the field cache (the global channel rule, the message read
-    # check and searches use it), compiled again after _woow_project_ai_forget_readable
-    woow_project_ai_readable_sql = fields.Json(
-        string='Task AI Chats Rule', compute='_compute_woow_project_ai_readable_sql', groups='base.group_system',
+    # the module's rule for this user (discuss.channel._woow_project_ai_rule_of): for a system administrator the
+    # compiled SQL of the task AI chats they may read (the data read at each use) and the fields it reads; for
+    # anyone else the list of their own member task chats they may read. Never stored: computed once per
+    # transaction and kept in the field cache (the global channel rule, the message read check and the
+    # searches use it), computed again after _woow_project_ai_forget_readable
+    woow_project_ai_readable_rule = fields.Json(
+        string='Task AI Chats Rule', compute='_compute_woow_project_ai_readable_rule', groups='base.group_system',
         prefetch=False)
 
-    def _compute_woow_project_ai_readable_sql(self):
+    def _compute_woow_project_ai_readable_rule(self):
         Channel = self.env['discuss.channel'].sudo()
         for user in self:
-            user.woow_project_ai_readable_sql = Channel._woow_project_ai_readable_sql_of(user)
+            user.woow_project_ai_readable_rule = Channel._woow_project_ai_rule_of(user)
 
     def write(self, vals):
         res = super().write(vals)

@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 19:56+0000\n"
-"PO-Revision-Date: 2026-11-24 19:56+0000\n"
+"POT-Creation-Date: 2026-11-24 22:47+0000\n"
+"PO-Revision-Date: 2026-11-24 22:47+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -109,6 +109,14 @@ msgstr "任務 AI 對話的檔案只能留在那個對話：不能移到別的�
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid ""
+"A file of a task AI conversation stays in that conversation: it cannot be "
+"the main attachment of another document."
+msgstr "任務 AI 對話的檔案只能留在那個對話：不能當作其他文件的主要附件。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/mail_message.py:0
 msgid ""
 "A message of a task AI conversation can only be answered in that "
@@ -131,8 +139,9 @@ msgstr "專案經理可以把專案分享給 portal 使用者（專案的「設�
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/rating_rating.py:0
-msgid "A rating cannot be linked to a message of a task AI conversation."
-msgstr "評分不能連到任務 AI 對話的訊息。"
+msgid ""
+"A rating cannot be about a task AI conversation or one of its messages."
+msgstr "評分不能針對任務 AI 對話或它的訊息。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -158,6 +167,12 @@ msgstr "任務 AI 對話必須同時有任務和分頁。"
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "A task AI conversation only takes messages written in it."
 msgstr "任務 AI 對話只接受在對話裡寫的訊息。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/discuss_channel.py:0
+msgid "A task AI conversation takes no ratings."
+msgstr "任務 AI 對話不接受評分。"
 
 #. module: woow_ai_task
 #: model:ir.model.constraint,message:woow_ai_task.constraint_discuss_channel_woow_project_ai_tab_uniq
@@ -638,6 +653,11 @@ msgid "Email Thread"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_mail_compose_message
+msgid "Email composition wizard"
+msgstr ""
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Empty: Sorry, I cannot answer right now. Please try again later."
 msgstr "留空：抱歉，我現在無法回覆，請稍後再試。"
@@ -1090,6 +1110,11 @@ msgstr ""
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__log_payload
 msgid "Log Request Content"
 msgstr "記錄請求內容"
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_mail_thread_main_attachment
+msgid "Mail Main Attachment management"
+msgstr ""
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__max_download_mb
@@ -1889,7 +1914,7 @@ msgid "Task"
 msgstr ""
 
 #. module: woow_ai_task
-#: model:ir.model.fields,field_description:woow_ai_task.field_res_users__woow_project_ai_readable_sql
+#: model:ir.model.fields,field_description:woow_ai_task.field_res_users__woow_project_ai_readable_rule
 msgid "Task AI Chats Rule"
 msgstr "任務 AI 對話規則"
 
@@ -2169,6 +2194,12 @@ msgstr "客戶 AI 對話的歡迎詞是專案的設定（在專案的「AI 助�
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "This field can only be searched as equal to True or False."
 msgstr "這個欄位只能搜尋等於 True 或 False。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid "This file is in a task AI conversation you cannot read."
+msgstr "這個檔案在您讀不到的任務 AI 對話中。"
 
 #. module: woow_ai_task
 #. odoo-python

@@ -12,8 +12,9 @@ mails of task-chat messages the user cannot read."""
 from odoo import api, models
 from odoo.exceptions import AccessError
 from odoo.osv import expression
+from odoo.tools import SQL
 
-from ..tools.ids import real_ids
+from ..tools.ids import defaults_set, real_ids, stores_other_than
 
 
 class MailMail(models.Model):
@@ -25,10 +26,17 @@ class MailMail(models.Model):
         # are left out of lists (their subject and author are the message's, read in the user's environment, where
         # the message read check refuses them); a direct read keeps the refusal; the mail queue runs as superuser
         if not self.env.su:
-            Message = self.env['mail.message'].sudo()
-            unreadable = Message._search([('model', '=', 'discuss.channel'),
-                                          ('res_id', 'in', self.env['discuss.channel']._woow_project_ai_unreadable_sql())])
-            domain = expression.AND([domain, [('mail_message_id', 'not in', unreadable)]])
+            # per mail, on its message's columns (Odoo LEFT JOINs mail_message for them): a mail of another model's
+            # message matches the first leaf, one of an ordinary channel the second; no set of messages is built,
+            # and the sets of task chats only when a channel message's mail is met
+            Channel = self.env['discuss.channel']
+            Channel.flush_model(['woow_project_ai_task_id'])
+            exclusion = ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', SQL(
+                "(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))]
+            readable = Channel._woow_project_ai_readable_value()
+            if not (isinstance(readable, list) and not readable):
+                exclusion = ['|'] + exclusion + [('res_id', 'in', readable)]
+            domain = expression.AND([domain, exclusion])
         return super()._search(domain, offset, limit, order)
 
     def _woow_project_ai_check_messages(self):
@@ -48,9 +56,20 @@ class MailMail(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         mails = super().create(vals_list)
-        if not self.env.su:
+        if not self.env.su and not self._woow_project_ai_new_messages_elsewhere(vals_list):
             mails._woow_project_ai_check_messages()
         return mails
+
+    @api.model
+    def _woow_project_ai_new_messages_elsewhere(self, vals_list):
+        """Whether each of these mails creates its own message of another model
+        than discuss.channel (no query; its message's own create checks it):
+        no given message, a model other than discuss.channel (a plain string,
+        or none), and no default for either."""
+        if defaults_set(self, ('mail_message_id', 'model')):
+            return False
+        return all(not vals.get('mail_message_id') and stores_other_than(vals.get('model'), 'discuss.channel')
+                   for vals in vals_list)
 
     def write(self, vals):
         res = super().write(vals)

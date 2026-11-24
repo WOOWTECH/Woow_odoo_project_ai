@@ -73,6 +73,7 @@ class TestRedesignReview(RedesignHelpers, AiTaskFixtures, TransactionCase):
         # the chats created later get those ids
         internal, secret = self.secret_message()
         self.assertIn(internal.id, future)
+        self.open_tab(self.staff2, 'internal')  # a mention reaches members only
         self.mention(internal, self.staff, self.staff2.partner_id, '<p>%s for Tina</p>' % SECRET)
         _same, plan = internal, self.file_of(internal, self.staff, 'plan.pdf', 'the internal plan')
         self.assertEqual(Channel._woow_project_ai_known_task_chats({internal.id}), {internal.id})
@@ -278,6 +279,7 @@ class TestRedesignReview(RedesignHelpers, AiTaskFixtures, TransactionCase):
 
     def test_06_reactions_only_from_members_who_may_read(self):
         internal, secret = self.secret_message()
+        self.open_tab(self.staff2, 'internal')  # mentioned while a member (a mention reaches members only)
         parent = self.mention(internal, self.staff, self.staff2.partner_id, '<p>Tina, see this</p>')
         reply = internal.with_user(self.staff).sudo().message_post(
             body='a reply', message_type='comment', subtype_xmlid='mail.mt_comment', parent_id=parent.id)
@@ -303,34 +305,37 @@ class TestRedesignReview(RedesignHelpers, AiTaskFixtures, TransactionCase):
         internal = self.open_tab(self.staff, 'internal')
         group = self.public_channel()
         Channel = type(self.env['discuss.channel'])
-        original = Channel._woow_project_ai_readable_sql_of
-        compiled = []
+        original = Channel._woow_project_ai_rule_of
+        computed = []
 
         def spy(records, user):
-            compiled.append(user.id)
+            computed.append(user.id)
             return original(records, user)
 
         self.env.invalidate_all()
-        with patch.object(Channel, '_woow_project_ai_readable_sql_of', spy):
+        with patch.object(Channel, '_woow_project_ai_rule_of', spy):
             Channels = self.env['discuss.channel'].with_user(self.staff)
             Messages = self.env['mail.message'].with_user(self.staff)
             for _i in range(5):
                 self.assertEqual(Channels.search([('id', '=', internal.id)]), internal)
                 self.assertEqual(Channels.search([('id', '=', group.id)]), group)
                 Messages.search([('needaction', '=', True)])
-            self.assertEqual(compiled, [self.staff.id], 'the rule compiled once per transaction and user')
-            # a new task chat: read by the compiled rule at once (it reads the data at each use)
+            self.assertEqual(computed, [self.staff.id], 'the rule computed once per transaction and user')
+            # a new task chat: the rule is computed again (Sam is in it now)
             customer_chat = self.open_tab(self.staff, 'customer')
             self.assertEqual(Channels.search([('id', '=', customer_chat.id)]), customer_chat)
-            # someone who gains access in the transaction (a group: the rule compiled again for them)
+            self.assertEqual(computed.count(self.staff.id), 2)
+            # someone who gains access in the transaction (a group: the rule computed again for them), then
+            # joins (Odoo lets a non-administrator read a group chat only as a member)
             Eve = self.env['discuss.channel'].with_user(self.employee)
             self.assertFalse(Eve._woow_project_ai_readable_chat_ids({internal.id}))
             self.employee.groups_id = [Command.link(self.env.ref('project.group_project_user').id)]
-            self.assertEqual(Eve._woow_project_ai_readable_chat_ids({internal.id}), {internal.id})
-            self.assertEqual(compiled.count(self.employee.id), 2)
+            self.assertFalse(Eve._woow_project_ai_readable_chat_ids({internal.id}))
+            self.assertEqual(computed.count(self.employee.id), 2)
             self.open_tab(self.employee, 'internal')
+            self.assertEqual(Eve._woow_project_ai_readable_chat_ids({internal.id}), {internal.id})
             self.assertEqual(Eve.search([('id', '=', internal.id)]), internal)
-        # the rule is a sub-query PostgreSQL evaluates for task chats only: one query per channel search
+        # the rule is the user's list of readable member chats: one query per channel search
         self.env.invalidate_all()
         Channels.search([('id', '=', group.id)])
         with self.assertQueryCount(1):
@@ -365,50 +370,53 @@ class TestRedesignReview(RedesignHelpers, AiTaskFixtures, TransactionCase):
         uma = self.inbox_user('aitask_uma')
         self.staff2.notification_type = 'inbox'
         internal = self.open_tab(self.staff, 'internal')
-        self.open_tab(tom, 'internal')
-        # Tom (a member), Uma and Tina are mentioned: Uma and Tina, who had not opened the tab, join (their
-        # notification is shown in their own environment, where Odoo's membership rule decides)
-        self.mention(internal, self.staff, tom.partner_id | uma.partner_id | self.staff2.partner_id,
-                     '<p>Tom, Uma and Tina, look</p>')
         people = tom.partner_id | uma.partner_id | self.staff2.partner_id
-        self.assertEqual(people & self.members(internal), people)
-        # Uma leaves the chat: her unread mention stays (as in Odoo)
+        for user in (tom, uma, self.staff2):
+            self.open_tab(user, 'internal')
+        self.mention(internal, self.staff, people, '<p>Tom, Uma and Tina, look</p>')
+        self.assertEqual([self.unread(partner, internal) for partner in people], [1, 1, 1])
+        # Uma leaves the chat (Odoo's Leave): she reads it no more, her unread mention there is marked read
         internal.with_user(uma).action_unfollow()
         self.assertNotIn(uma.partner_id, self.members(internal))
-        self.assertEqual([self.unread(partner, internal) for partner in people], [1, 1, 1])
+        self.assertEqual([self.unread(partner, internal) for partner in people], [1, 0, 1])
         before = {partner: partner._get_needaction_count() for partner in people}
         self.env['bus.bus'].sudo().search([]).unlink()
-        # Tom and Uma lose the access (a trigger: the project's privacy); Sam and Tina follow the project
+        # Tom loses the access (a trigger: the project's privacy); Sam and Tina follow the project
         self.project.message_subscribe(partner_ids=(self.staff | self.staff2).partner_id.ids)
         self.project.privacy_visibility = 'followers'
         self.env.flush_all()
         self.env.cr.precommit.run()  # (the bus notifications are written at commit)
         self.assertEqual([self.unread(partner, internal) for partner in people], [0, 0, 1])
         notices = self.env['bus.bus'].sudo().search([('message', 'like', 'mail.message/mark_as_read')])
-        for partner in tom.partner_id | uma.partner_id:
-            self.assertEqual(partner._get_needaction_count(), before[partner] - 1)
-            self.assertTrue(any(json.loads(notice.channel)[1:3] == ['res.partner', partner.id] for notice in notices))
+        self.assertEqual(tom.partner_id._get_needaction_count(), before[tom.partner_id] - 1)
+        self.assertTrue(any(json.loads(notice.channel)[1:3] == ['res.partner', tom.partner_id.id]
+                            for notice in notices))
         self.assertEqual(self.staff2.partner_id._get_needaction_count(), before[self.staff2.partner_id])
         self.assertNotIn(tom.partner_id, self.members(internal))
 
-    def test_09_mentioned_colleagues_join_and_read_their_inbox(self):
-        """A mention of a colleague who may be in the chat but has not opened its tab: the post works, they
-        join (muted in a customer chat), and their Inbox shows the mention (both read the chat in their own
-        environment)."""
+    def test_09_a_mention_of_a_non_member_reaches_nobody(self):
+        """Round 5 (#2): a mention of a colleague who may be in the chat but is not a member posts, notifies
+        nobody and adds nobody; a member's mention notifies them, and their Inbox shows it."""
         self.staff2.notification_type = 'inbox'
         for tab in ('internal', 'customer'):
             with self.subTest(tab=tab):
                 chat = self.open_tab(self.staff, tab)
                 self.assertNotIn(self.staff2.partner_id, self.members(chat))
-                self.mention(chat, self.staff, self.staff2.partner_id, '<p>Tina, the %s chat</p>' % tab)
-                self.assertIn(self.staff2.partner_id, self.members(chat))
-                member = chat.sudo().channel_member_ids.filtered(lambda m: m.partner_id == self.staff2.partner_id)
-                self.assertEqual(member.custom_notifications == 'no_notif', tab == 'customer')
+                message = self.mention(chat, self.staff, self.staff2.partner_id, '<p>Tina, the %s chat</p>' % tab)
+                self.assertTrue(message)
+                self.assertNotIn(self.staff2.partner_id, self.members(chat))
+                self.assertNotIn(self.staff2.partner_id, message.sudo().partner_ids)
+                self.assertEqual(self.unread(self.staff2.partner_id, chat), 0)
+                # once a member (her own tab), a mention reaches her and her Inbox shows it
+                self.open_tab(self.staff2, tab)
+                self.mention(chat, self.staff, self.staff2.partner_id, '<p>Tina, now in the %s chat</p>' % tab)
+                self.assertEqual(self.unread(self.staff2.partner_id, chat), 1)
                 self.env.invalidate_all()
                 messages = self.env['mail.message'].with_user(self.staff2)._message_fetch(
                     [('needaction', '=', True)])['messages']
                 result = Store(messages, for_current_user=True).get_result()
-                self.assertIn('Tina, the %s chat' % tab, json.dumps(result, ensure_ascii=False))
+                self.assertIn('Tina, now in the %s chat' % tab, json.dumps(result, ensure_ascii=False))
+                self.assertNotIn('Tina, the %s chat' % tab, json.dumps(result, ensure_ascii=False))
         # someone who may not be in the chat: neither notified nor joined
         internal = self.open_tab(self.staff, 'internal')
         message = self.mention(internal, self.staff, self.employee.partner_id, '<p>Eve?</p>')
@@ -418,6 +426,7 @@ class TestRedesignReview(RedesignHelpers, AiTaskFixtures, TransactionCase):
     def test_09_hourly_sweep_marks_them_read(self):
         uma = self.inbox_user('aitask_uma')
         internal = self.open_tab(self.staff, 'internal')
+        self.open_tab(uma, 'internal')
         self.mention(internal, self.staff, uma.partner_id, '<p>Uma, look</p>')
         self.assertEqual(self.unread(uma.partner_id, internal), 1)
         # the access goes without any trigger (a change in SQL): only the sweep sees it
@@ -556,6 +565,7 @@ class TestRedesignReviewHttp(RedesignHelpers, AiTaskFixtures, HttpCase):
     def test_payloads(self):
         self.staff2.notification_type = 'inbox'
         internal, secret = self.secret_message()
+        self.open_tab(self.staff2, 'internal')  # mentioned while a member (a mention reaches members only)
         parent = self.mention(internal, self.staff, self.staff2.partner_id, '<p>Tina, see this</p>')
         self.assertEqual(self.unread(self.staff2.partner_id, internal), 1)
         reply = internal.with_user(self.staff).sudo().message_post(
@@ -568,7 +578,8 @@ class TestRedesignReviewHttp(RedesignHelpers, AiTaskFixtures, HttpCase):
         with mute_logger('odoo.http'), self.assertRaises(JsonRpcException):
             self.make_jsonrpc_request('/mail/message/reaction',
                                       {'message_id': reply.id, 'content': '👎', 'action': 'add'})
-        self.assertFalse(reply.sudo().reaction_ids)
+        # (read as the superuser account: Sam, whose environment the reply has, lost the chat too)
+        self.assertFalse(self.env['mail.message'].browse(reply.id).reaction_ids)
         # 9: the Inbox lists nothing of the chat, and the counter agrees
         data = self.make_jsonrpc_request('/mail/inbox/messages', {'limit': 30})
         self.assertNotIn('Tina, see this', json.dumps(data, ensure_ascii=False))

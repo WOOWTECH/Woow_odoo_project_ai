@@ -45,3 +45,23 @@ def require_int_ids(records):
     for id_ in records._ids:
         if id_ and not (isinstance(id_, int) and not isinstance(id_, bool)):
             raise AccessError(records.env._('Invalid record id: %(id)r', id=id_))
+
+
+def stores_other_than(value, model_name):
+    """Whether a create value of a model-name field (mail.message.model,
+    ir.attachment.res_model...) is stored as something other than
+    `model_name`: nothing (False, None) or a plain string that is not it. Any
+    other type (bytes, an XML-RPC binary...) answers no: the caller checks the
+    stored rows then."""
+    return value is None or value is False or (isinstance(value, str) and value != model_name)
+
+
+def defaults_set(records, field_names):
+    """Whether a create of `records`' model may get one of `field_names` from a
+    default (a default_* key of the context, or an ir.default): the caller
+    then checks the stored rows."""
+    context = records.env.context
+    if any(context.get('default_' + name) for name in field_names):
+        return True
+    defaults = records.env['ir.default'].sudo()._get_model_defaults(records._name)
+    return any(defaults.get(name) for name in field_names)
