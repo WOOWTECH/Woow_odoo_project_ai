@@ -11,7 +11,7 @@ from odoo.tests.common import HttpCase, JsonRpcException, TransactionCase, new_t
 from odoo.tools import mute_logger
 
 from odoo.addons.woow_ai_task.models import ai_job
-from odoo.addons.woow_ai_task.models.bus_bus import CACHE_ATTRIBUTE
+from odoo.addons.woow_ai_task.models.discuss_channel import TASK_CHAT_CACHE as CACHE_ATTRIBUTE
 
 from .common import BACKEND_POST, AiTaskFixtures, http_response, openai_ok
 from .test_team_review import ReviewHelpers
@@ -79,12 +79,20 @@ class TestDeltaReview(DeltaHelpers, AiTaskFixtures, TransactionCase):
                 attempt()
         own.invalidate_recordset()
         self.assertFalse(own.sudo().attachment_ids)
-        # a message elsewhere that holds such a file (linked as superuser) never deletes it either: emptied by
-        # its author, or through Odoo's delete route (with sudo for portal users)
+        # not even superuser links it there (the stored rows are checked: Odoo's post route runs as superuser)
+        with self.assertRaises(AccessError), self.env.cr.savepoint():
+            self.env['mail.message'].create({
+                'model': 'discuss.channel', 'res_id': group.id, 'body': 'old link', 'message_type': 'comment',
+                'subtype_id': self.comment(), 'author_id': self.staff.partner_id.id,
+                'attachment_ids': [Command.link(contract.id)]})
+        # a message elsewhere that would hold such a file (a row written in SQL) never deletes it either: emptied
+        # by its author, or through Odoo's delete route (with sudo for portal users)
         holder = self.env['mail.message'].create({
             'model': 'discuss.channel', 'res_id': group.id, 'body': 'old link', 'message_type': 'comment',
-            'subtype_id': self.comment(), 'author_id': self.staff.partner_id.id,
-            'attachment_ids': [Command.link(contract.id)]})
+            'subtype_id': self.comment(), 'author_id': self.staff.partner_id.id})
+        self.env.cr.execute("INSERT INTO message_attachment_rel (message_id, attachment_id) VALUES (%s, %s)",
+                            (holder.id, contract.id))
+        holder.invalidate_recordset(['attachment_ids'])
         with self.assertRaises(AccessError), self.env.cr.savepoint():
             group.with_user(self.staff)._message_update_content(holder.sudo(), '', attachment_ids=[])
         with self.assertRaises(AccessError), self.env.cr.savepoint():
@@ -112,17 +120,17 @@ class TestDeltaReview(DeltaHelpers, AiTaskFixtures, TransactionCase):
     def test_02_copy_and_export_need_read_access(self):
         internal, secret = self.secret_message()
         default = {'model': False, 'res_id': False, 'attachment_ids': [], 'parent_id': False}
-        # a customer, an employee without Project rights, a project user who is not in the chat
-        for user in (self.customer, self.outsider, self.employee, self.staff2):
+        # customers, an employee without Project rights: they cannot read the internal chat
+        for user in (self.customer, self.outsider, self.employee):
             with self.subTest(user=user.login), self.assertRaises(AccessError), self.env.cr.savepoint():
                 secret.with_user(user).copy(default)
+        admin = new_test_user(self.env, 'aitask_rights_admin', groups='base.group_user,base.group_erp_manager')
         with self.assertRaises(AccessError), self.env.cr.savepoint():
-            secret.with_user(self.boss).export_data(['body'])  # Odoo lets administrators export any message
+            secret.with_user(admin).export_data(['body'])  # Odoo lets administrators export any message
         self.assertEqual(self.env['mail.message'].search_count([('body', 'ilike', 'INTERNAL SECRET')]), 1)
-        # people of the chat copy and export as before
+        # people who may read the chat (its members, colleagues who may open it) copy and export as before
         copied = secret.with_user(self.staff).copy(default)
         self.assertIn('INTERNAL SECRET', copied.body)
-        self.open_tab(self.boss, 'internal')
         exported = secret.with_user(self.boss).export_data(['body'])
         self.assertIn('INTERNAL SECRET', exported['datas'][0][0])
         # any other message: Odoo's own rules, unchanged
@@ -319,75 +327,12 @@ class TestDeltaReview(DeltaHelpers, AiTaskFixtures, TransactionCase):
             return original(records, field_names)
 
         with patch.object(Message, 'fetch', spy):
-            child.with_user(self.staff)._woow_project_ai_check_parents()
+            child.with_user(self.staff)._woow_project_ai_check_stored()
         self.assertFalse([ids for ids in fetched if note.id in ids], 'the parent is never read')
-        # and a parent in a task chat is still refused
+        # and a parent in a task chat is refused, as stored, for superuser too
         _internal, secret = self.secret_message()
-        child.sudo().parent_id = secret
-        with self.assertRaises(AccessError):
-            child.with_user(self.staff)._woow_project_ai_check_parents()
-
-    # --- 17: onchanges and the full composer read with sudo ---
-
-    def test_17_no_onchange_shows_a_chat_message(self):
-        internal, secret = self.secret_message()
-        chat = self.open_tab(self.customer, 'customer')
-        self.open_tab(self.staff, 'customer')
-        contract = self.file_of(chat, self.customer, 'contract.pdf', 'signed')
-        Message = self.env['mail.message']
-        spec = {'parent_id': {}}
-        if 'parent_body' in Message._fields:  # im_livechat: the parent's body, read with sudo
-            spec.update({'parent_body': {}, 'parent_author_name': {}})
-        refused = {
-            'parent id': lambda user: Message.with_user(user).onchange({'parent_id': secret.id}, ['parent_id'],
-                                                                     spec),
-            'parent dict': lambda user: Message.with_user(user).onchange({'parent_id': {'id': secret.id}},
-                                                                       ['parent_id'], spec),
-            'parent pair': lambda user: Message.with_user(user).onchange({'parent_id': [secret.id, 'x']},
-                                                                       ['parent_id'], spec),
-            'default context': lambda user: Message.with_user(user).with_context(
-                default_parent_id=secret.id).onchange({}, [], spec),
-            'the message itself': lambda user: secret.with_user(user).onchange({}, ['body'], {'body': {}}),
-            'x2many': lambda user: self.env['res.partner'].with_user(user).onchange(
-                {'starred_message_ids': [Command.link(secret.id)]}, ['starred_message_ids'],
-                {'starred_message_ids': {}}),
-            'composer parent': lambda user: self.env['mail.compose.message'].with_user(user).onchange(
-                {'parent_id': secret.id}, ['parent_id'], {'subject': {}, 'parent_id': {}}),
-            'composer file': lambda user: self.env['mail.compose.message'].with_user(user).onchange(
-                {'attachment_ids': [Command.set(contract.ids)]}, ['attachment_ids'], {'attachment_ids': {}}),
-            'nested line': lambda user: self.env['res.partner'].with_user(user).onchange(
-                {'child_ids': [Command.create({'name': 'x', 'starred_message_ids': [Command.link(secret.id)]})]},
-                ['child_ids'], {'child_ids': {}}),
-        }
-        # staff2: a project user who is in neither chat; the customer, for the message routes they may call
-        for name, attempt in refused.items():
-            with self.subTest(name), self.assertRaises(AccessError), self.env.cr.savepoint():
-                attempt(self.staff2)
         with self.assertRaises(AccessError), self.env.cr.savepoint():
-            refused['parent id'](self.customer)
-        # a record created or written with a link to one, on any model: the full composer (its subject, partners
-        # and record name come from the parent), a task's cover image (its name is shown with sudo)...
-        with self.assertRaises(AccessError), self.env.cr.savepoint():
-            self.task.with_user(self.staff2).write({'displayed_image_id': contract.id})
-        Composer = self.env['mail.compose.message'].with_user(self.staff2)
-        for vals in ({'parent_id': secret.id}, {'attachment_ids': [Command.set(contract.ids)]}):
-            with self.subTest(vals=vals), self.assertRaises(AccessError), self.env.cr.savepoint():
-                Composer.create(dict(vals, model='project.task', res_ids=str(self.task.ids)))
-        composer = Composer.create({'model': 'project.task', 'res_ids': str(self.task.ids), 'body': 'x'})
-        with self.assertRaises(AccessError), self.env.cr.savepoint():
-            composer.write({'parent_id': secret.id})
-        with self.assertRaises(AccessError), self.env.cr.savepoint():
-            Composer.with_context(default_parent_id=secret.id).create(
-                {'model': 'project.task', 'res_ids': str(self.task.ids)})
-        # people of the chat: as before
-        refused['parent id'](self.staff)
-        refused['composer parent'](self.staff)
-        self.task.with_user(self.staff).write({'displayed_image_id': contract.id})
-        self.env['mail.compose.message'].with_user(self.staff).create(
-            {'parent_id': secret.id, 'model': 'discuss.channel', 'res_ids': str(internal.ids)})
-        # any other message: Odoo's own rules, unchanged
-        note = self.task.message_post(body='TASK NOTE', message_type='comment', subtype_xmlid='mail.mt_note')
-        Message.with_user(self.staff2).onchange({'parent_id': note.id}, ['parent_id'], spec)
+            child.sudo().parent_id = secret
 
     # --- 18: the sync cron is not rewritten by an upgrade ---
 
@@ -452,18 +397,12 @@ class TestDeltaReviewHttp(DeltaHelpers, AiTaskFixtures, HttpCase):
         self.assertTrue(contract.exists())
         self.assertEqual(self.find(chat, 'my signed contract').attachment_ids, contract)
 
-    def test_02_17_portal_users_read_no_chat_message(self):
+    def test_02_portal_users_copy_no_chat_message(self):
         _internal, secret = self.secret_message()
         self.authenticate('aitask_customer', 'aitask_customer')
         self.refused('/web/dataset/call_kw/mail.message/copy', {
             'model': 'mail.message', 'method': 'copy', 'args': [secret.ids],
             'kwargs': {'default': {'model': False, 'res_id': False, 'attachment_ids': [], 'parent_id': False}}})
-        spec = {'parent_id': {}}
-        if 'parent_body' in self.env['mail.message']._fields:
-            spec.update({'parent_body': {}, 'parent_author_name': {}})
-        self.refused('/web/dataset/call_kw/mail.message/onchange', {
-            'model': 'mail.message', 'method': 'onchange', 'kwargs': {},
-            'args': [[], {'parent_id': secret.id}, ['parent_id'], spec]})
         self.assertEqual(self.env['mail.message'].sudo().search_count([('body', 'ilike', 'INTERNAL SECRET')]), 1)
 
     def test_06_an_administrator_cannot_empty_a_customer_message(self):

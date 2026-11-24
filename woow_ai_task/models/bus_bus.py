@@ -11,8 +11,8 @@ notifications pending in this poll that this user cannot read now (the
 global rule, and membership) are left out of it.
 
 Cost: which channel ids are task chats is kept per process, on the registry
-(the link is set when a chat is created and never changes; ids are never
-reused), so a poll without any task chat costs nothing more; with task
+(discuss.channel._woow_project_ai_known_task_chats, shared with the message
+read check), so a poll without any task chat costs nothing more; with task
 chats, one query on bus_bus tells whether this poll carries anything for
 them, and only then the user's readable search runs, for those chats only
 (never cached: the access is checked at each poll)."""
@@ -22,11 +22,6 @@ import datetime
 from odoo import api, fields, models
 
 from odoo.addons.bus.models.bus import TIMEOUT, channel_with_db, json_dump
-
-# {channel id: is a task chat}, kept on the registry (a new registry, after a module update or a database
-# restore, starts empty); started again when it grows past this
-CACHE_ATTRIBUTE = '_woow_project_ai_task_chat_ids'
-MAX_CACHED_IDS = 50000
 
 
 def _channel_id(channel):
@@ -52,27 +47,10 @@ class BusBus(models.Model):
         return super()._poll(channels, last=last, ignore_ids=ignore_ids)
 
     @api.model
-    def _woow_project_ai_task_chats(self, ids):
-        """Those of `ids` that are task AI chats (cached per process)."""
-        registry = self.env.registry
-        known = getattr(registry, CACHE_ATTRIBUTE, None)
-        if known is None or len(known) > MAX_CACHED_IDS:
-            known = {}
-            setattr(registry, CACHE_ATTRIBUTE, known)
-        unknown = [i for i in ids if i not in known]
-        if unknown:
-            self.env.cr.execute("SELECT id FROM discuss_channel WHERE id = ANY(%s) "
-                                "AND woow_project_ai_task_id IS NOT NULL", [unknown])
-            found = {row[0] for row in self.env.cr.fetchall()}
-            for i in unknown:
-                known[i] = i in found
-        return {i for i in ids if known.get(i)}
-
-    @api.model
     def _woow_project_ai_readable_channels(self, channels, last=0, ignore_ids=None):
         channels = list(channels or ())
         ids = {cid for cid in map(_channel_id, channels) if cid}
-        task_chats = self._woow_project_ai_task_chats(ids) if ids else set()
+        task_chats = self.env['discuss.channel']._woow_project_ai_known_task_chats(ids) if ids else set()
         if not task_chats:
             return channels
         # anything pending for them in this poll? (the same window as Odoo's _poll)

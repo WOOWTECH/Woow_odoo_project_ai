@@ -56,7 +56,7 @@ from email.utils import parseaddr
 import psycopg2
 from markupsafe import Markup
 
-from odoo import SUPERUSER_ID, api, fields, models
+from odoo import SUPERUSER_ID, Command, api, fields, models
 from odoo.exceptions import AccessError, UserError
 from odoo.service.model import PG_CONCURRENCY_EXCEPTIONS_TO_RETRY
 from odoo.tools import SQL
@@ -64,6 +64,7 @@ from odoo.tools.misc import clean_context
 
 from odoo.addons.mail.tools.discuss import Store
 
+from ..tools.ids import as_id, real_ids
 from .project_project import PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL
 
 _logger = logging.getLogger(__name__)
@@ -89,8 +90,6 @@ TRIGGER_KEY = 'woow_project_ai_trigger_id'
 # set by message_post around its own message create (mail_message.py refuses every other direct create of a
 # task chat message): an instance no client can send, holding the chat it is for
 POST_KEY = 'woow_project_ai_post'
-# a person's files in a post or an edit: their own uploads, not yet posted (Odoo's rule for portal users)
-PENDING_ATTACHMENT_MODELS = ('mail.compose.message', 'mail.scheduled.message')
 
 
 class PostMarker:
@@ -105,6 +104,11 @@ def posted_by_this_module(env, channel_id):
     return isinstance(marker, PostMarker) and marker.channel_id == channel_id
 
 TASK_LINK_FIELDS = {'woow_project_ai_task_id', 'woow_project_ai_tab'}
+# {channel id: is a task chat}, kept on the registry (a new registry, after a module update or a database
+# restore, starts empty; the link is set when a chat is created and never changes, ids are never reused);
+# started again when it grows past MAX_CACHED_IDS
+TASK_CHAT_CACHE = '_woow_project_ai_task_chat_ids'
+MAX_CACHED_IDS = 50000
 # the hourly membership sweep: where it stopped (a channel id, kept with SQL: no cache invalidation), how long
 # one call runs, what it leaves of the cron pass's own time limit, and when a pass out of time goes on
 SWEEP_CURSOR_PARAM = 'woow_ai_task.sweep_cursor'
@@ -195,6 +199,12 @@ class DiscussChannel(models.Model):
         search='_search_woow_project_ai_readable',
         help='Not a task AI chat, or the current user can read its task now (internal chats: employees with '
              'Project rights who can read its project too).')
+    woow_project_ai_brief_project_ids = fields.Many2many(
+        'project.project', 'woow_project_ai_channel_brief_project_rel', 'channel_id', 'project_id',
+        string='Projects of the Internal Texts Used', readonly=True, copy=False, groups='base.group_system',
+        help='Internal chat: the projects whose internal text the AI got for an answer here. The chat stays '
+             'with people who can read every one of them (a task moved to another project keeps its earlier '
+             'answers away from readers of the new project only).')
 
     _sql_constraints = [
         ('woow_project_ai_tab_uniq', 'unique(woow_project_ai_task_id, woow_project_ai_tab)',
@@ -211,17 +221,13 @@ class DiscussChannel(models.Model):
         # any other channel: readable as far as this module goes, without a query; task chats: the search
         # method decides (the current user, Odoo's rules), one query for the batch; per user in the cache
         # (record rule checks read it through filtered_domain)
-        ids = [i for i in self.ids if isinstance(i, int)]
-        chats = set()
-        if ids:
-            self.flush_model(['woow_project_ai_task_id'])
-            self.env.cr.execute(SQL(
-                "SELECT id FROM discuss_channel WHERE id IN %s AND woow_project_ai_task_id IS NOT NULL", tuple(ids)))
-            chats = {row[0] for row in self.env.cr.fetchall()}
-        readable = set(self.sudo().with_context(active_test=False).search(
-            [('id', 'in', list(chats)), ('woow_project_ai_readable', '=', True)]).ids) if chats else set()
+        # ids as Odoo matches them in SQL (an id sent as 4242.0 is the channel 4242)
+        ids = {channel: channel_id for channel in self if (channel_id := as_id(channel.id))}
+        chats = self._woow_project_ai_known_task_chats(set(ids.values())) if ids else set()
+        readable = self._woow_project_ai_readable_chat_ids(chats) if chats else set()
         for channel in self:
-            channel.woow_project_ai_readable = channel.id not in chats or channel.id in readable
+            channel_id = ids.get(channel)
+            channel.woow_project_ai_readable = channel_id not in chats or channel_id in readable
 
     def _search_woow_project_ai_readable(self, operator, value):
         if operator not in ('=', '!=') or not isinstance(value, bool):
@@ -262,8 +268,9 @@ class DiscussChannel(models.Model):
                 # the internal chats: the task's project readable too (its internal text is in the chat)
                 Project = self.env['project.project'].with_user(user).with_context(
                     active_test=False, allowed_company_ids=list(user._get_company_ids()))
+                readable_projects = Project._search([])
                 internal_tasks = Task._search([
-                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', Project._search([]))])
+                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', readable_projects)])
         except psycopg2.Error:
             raise  # the transaction is aborted: swallowing it would only move the failure to the next query
         except Exception:  # noqa: BLE001 - AccessError, a task rule that cannot be evaluated for this user...
@@ -276,10 +283,55 @@ class DiscussChannel(models.Model):
             return no_task_chat
         customer = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
         if internal_tasks is not None:
+            # ... and every project whose internal text an answer of the chat used (a task moved to another
+            # project: the earlier answers stay with the readers of the old project)
             return ['|', ('woow_project_ai_task_id', '=', False), '|'] + customer + [
-                '&', ('woow_project_ai_tab', '=', TAB_INTERNAL), ('woow_project_ai_task_id', 'in', internal_tasks)]
+                '&', '&', ('woow_project_ai_tab', '=', TAB_INTERNAL), ('woow_project_ai_task_id', 'in', internal_tasks),
+                ('woow_project_ai_brief_project_ids', 'not any', [('id', 'not in', readable_projects)])]
         # portal users, and employees without Project rights: the customer chats only
         return ['|', ('woow_project_ai_task_id', '=', False)] + customer
+
+    @api.model
+    def _woow_project_ai_known_task_chats(self, ids):
+        """Those of the channel `ids` (ints) that are task AI chats, from a
+        per-process cache on the registry: a query only for ids this process
+        never saw."""
+        ids = {i for i in ids if isinstance(i, int)}
+        if not ids:
+            return set()
+        registry = self.env.registry
+        known = getattr(registry, TASK_CHAT_CACHE, None)
+        if known is None or len(known) > MAX_CACHED_IDS:
+            known = {}
+            setattr(registry, TASK_CHAT_CACHE, known)
+        unknown = [i for i in ids if i not in known]
+        if unknown:
+            self.flush_model(['woow_project_ai_task_id'])
+            self.env.cr.execute("SELECT id FROM discuss_channel WHERE id = ANY(%s) "
+                                "AND woow_project_ai_task_id IS NOT NULL", [unknown])
+            found = {row[0] for row in self.env.cr.fetchall()}
+            for i in unknown:
+                known[i] = i in found
+        return {i for i in ids if known.get(i)}
+
+    @api.model
+    def _woow_project_ai_readable_cached(self, chat_ids):
+        """_woow_project_ai_readable_chat_ids through the per-user computed
+        field woow_project_ai_readable: computed once per batch and then kept
+        in the cache for the transaction, as Odoo's own rule checks keep it."""
+        chats = self.sudo().with_context(active_test=False).browse(sorted(chat_ids))
+        return {chat.id for chat in chats if chat.woow_project_ai_readable}
+
+    @api.model
+    def _woow_project_ai_readable_chat_ids(self, chat_ids):
+        """Those of the task chat ids `chat_ids` that the current user
+        (env.uid, also under sudo) may read under the module's rule (one
+        query: their task now, and for the internal chat its project and the
+        projects of the internal texts used; membership aside)."""
+        if not chat_ids:
+            return set()
+        return set(self.sudo().with_context(active_test=False).search(
+            [('id', 'in', sorted(chat_ids)), ('woow_project_ai_readable', '=', True)]).ids)
 
     # --- Helpers ---
 
@@ -360,11 +412,33 @@ class DiscussChannel(models.Model):
         if not is_sync(self.env) and any(TASK_LINK_FIELDS & set(vals) for vals in vals_list):
             raise AccessError(self.env._('Task AI conversations are created by their task only.'))
         channels = super().create(vals_list)
-        if not is_sync(self.env) and channels.sudo().filtered(
-                lambda channel: channel.woow_project_ai_task_id or channel.woow_project_ai_tab):
-            # set by default_* context keys (whatever the route: create, copy...)
-            raise AccessError(self.env._('Task AI conversations are created by their task only.'))
+        channels._woow_project_ai_check_stored_channels(not is_sync(self.env))
         return channels
+
+    def _woow_project_ai_check_stored_channels(self, refuse_links):
+        """The created channels as stored (Odoo writes a many2one given as a
+        string or a float straight into the INSERT while its cache, and so its
+        own constraints, see none): no task link outside this module (default_*
+        context, ir.default, string ids...), and, for everyone, no sub-channel
+        of a task chat nor one made from a task-chat message (Odoo serializes
+        from_message_id with sudo to the sub-channel's readers)."""
+        ids = real_ids(self)
+        if not ids:
+            return
+        self.flush_recordset()
+        self.env.cr.execute("""
+            SELECT bool_or(c.woow_project_ai_task_id IS NOT NULL OR c.woow_project_ai_tab IS NOT NULL),
+                   bool_or(pc.id IS NOT NULL OR mc.id IS NOT NULL)
+              FROM discuss_channel c
+              LEFT JOIN discuss_channel pc ON pc.id = c.parent_channel_id AND pc.woow_project_ai_task_id IS NOT NULL
+              LEFT JOIN mail_message m ON m.id = c.from_message_id AND m.model = 'discuss.channel'
+              LEFT JOIN discuss_channel mc ON mc.id = m.res_id AND mc.woow_project_ai_task_id IS NOT NULL
+             WHERE c.id = ANY(%s)""", [ids])
+        linked, thread = self.env.cr.fetchone()
+        if linked and refuse_links:
+            raise AccessError(self.env._('Task AI conversations are created by their task only.'))
+        if thread:
+            raise AccessError(self.env._('A task AI conversation has no threads.'))
 
     def write(self, vals):
         if not is_sync(self.env):
@@ -437,37 +511,10 @@ class DiscussChannel(models.Model):
             if kwargs.get('partner_ids'):
                 # a mention notifies (and lets read the message) only people who may be in this chat
                 kwargs['partner_ids'] = self._woow_project_ai_allowed_partner_ids(kwargs['partner_ids'])
-            if kwargs.get('attachment_ids') and not self._woow_project_ai_is_bot_post(kwargs):
-                # a person posts their own new uploads only: Odoo lets employees link any file id, which
-                # would let them take (and then delete) a file of someone else's message
-                self._woow_project_ai_check_own_files(kwargs['attachment_ids'])
+            # the files of the message are checked as stored (mail_message.py): the chat's own files, the
+            # author's own uploads (the AI's replies: the module's files)
             self = self.with_context(**{POST_KEY: PostMarker(self.id)})  # noqa: PLW0642
         return super().message_post(message_type=message_type, **kwargs)
-
-    def _woow_project_ai_is_bot_post(self, values):
-        """A post of an AI assistant (superuser, in the bot's name)."""
-        author_id = values.get('author_id')
-        return bool(self.env.su and author_id and author_id in self._woow_project_ai_bot_partner_ids())
-
-    def _woow_project_ai_check_own_files(self, attachment_ids, message=None):
-        """Refuse files that are not the current user's own uploads, not yet
-        posted (or, for an edit, already on `message`)."""
-        ids = [command[1] if isinstance(command, (list, tuple)) and len(command) > 1 else command
-               for command in attachment_ids or []]
-        ids = [i for i in ids if isinstance(i, int)]
-        if not ids:
-            return
-        attachments = self.env['ir.attachment'].sudo().browse(ids).exists()
-        kept = message.sudo().attachment_ids if message else self.env['ir.attachment']
-        for attachment in attachments:
-            if attachment in kept:
-                continue
-            if attachment.create_uid.id != self.env.uid or attachment.res_model not in PENDING_ATTACHMENT_MODELS:
-                raise AccessError(self.env._('In a task AI conversation you can only add files you uploaded '
-                                             'yourself.'))
-        if len(attachments) != len(set(ids)):
-            raise AccessError(self.env._('In a task AI conversation you can only add files you uploaded '
-                                         'yourself.'))
 
     def set_message_pin(self, message_id, pinned):
         # Odoo posts a "pinned a message" notice as the member (not superuser): the one notice a person may post
@@ -495,9 +542,7 @@ class DiscussChannel(models.Model):
                 if message.sudo().author_id != self.env.user.partner_id:
                     raise AccessError(self.env._('Only its author can edit or delete a message of a task AI '
                                                  'conversation.'))
-                if attachment_ids:
-                    # files kept on the message, or the author's own new uploads (never another one's file)
-                    self._woow_project_ai_check_own_files(attachment_ids, message)
+                # the files it keeps or gets: checked as stored (mail_message.py)
             if partner_ids:
                 # an edit that mentions someone: same as a post (Odoo makes them recipients)
                 partner_ids = self._woow_project_ai_allowed_partner_ids(partner_ids)
@@ -1110,6 +1155,9 @@ class DiscussChannel(models.Model):
         # written for the customers
         if brief and (tab == TAB_CUSTOMER or channel._woow_project_ai_project_shared(requester)):
             parts.append('%s\n%s' % (BRIEF_HEADER, brief))
+            if tab == TAB_INTERNAL and task.project_id not in channel.woow_project_ai_brief_project_ids:
+                # the answers will be built from this project's text: the chat stays with its readers
+                channel.woow_project_ai_brief_project_ids = [Command.link(task.project_id.id)]
         if requester:
             audience = None
             if tab == TAB_INTERNAL:

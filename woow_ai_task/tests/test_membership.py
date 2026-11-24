@@ -216,8 +216,9 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
             channel.with_user(self.customer).read(['name'])
         with self.assertRaises(AccessError):
             staff_message.with_user(self.customer).read(['body'])
-        self.assertEqual(message.with_user(self.customer).read(['author_id'])[0]['author_id'][0],
-                         self.customer.partner_id.id, 'their own message stays theirs (Odoo: author)')
+        # their own message neither (Odoo lets an author read it; the task chat follows the task access)
+        with self.assertRaises(AccessError):
+            message.with_user(self.customer).read(['author_id'])
         self.authenticate('aitask_customer', 'aitask_customer')
         self.assertEqual(self.url_open('/discuss/channel/%s' % channel.id).status_code, 404)
         with mute_logger('odoo.http'), self.assertRaises(JsonRpcException):

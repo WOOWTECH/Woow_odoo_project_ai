@@ -19,6 +19,7 @@ AI (`im_livechat_ai`) without sharing anything with them.
 | `woow_ai_task` | 18.0.1.0.0 | Project AI: internal and customer AI chats on every task |
 | `woow_ai_task_portal_discuss` | 18.0.1.0.0 | Bridge, installed automatically with `woow_odoo_portal_discuss`: task chats stay out of `/my/discussions`, its tabs and its card |
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows; the unread messages of the customer's task AI chats get their own notice and `/my` card, which open the task page |
+| `woow_ai_task_snailmail` | 18.0.1.0.0 | Bridge, installed automatically with `snailmail` (which Odoo installs with `mail`): a file of a task AI chat is never put in a letter |
 
 ## Features
 
@@ -42,7 +43,9 @@ AI (`im_livechat_ai`) without sharing anything with them.
 - **Up to two private conversations per task** (one per assistant the
   project chose), created when someone opens the tab:
   - *Internal AI chat*: colleagues with Project rights who can read the task
-    and its project (the project text of the internal AI is in its answers);
+    and its project, and every project whose internal text an answer used
+    (a task moved to another project keeps its earlier answers with the
+    readers of the old one);
   - *Customer AI chat*: portal users who can read the task (also on the
     portal task page), in a project shared with portal users; colleagues may
     read and write there and join muted.
@@ -82,7 +85,7 @@ AI (`im_livechat_ai`) without sharing anything with them.
 
 ## Install
 
-1. Put this whole repository on the addons path: the two bridges must be
+1. Put this whole repository on the addons path: the three bridges must be
    there too, so that Odoo installs them with the modules they bridge.
 2. Install *Project AI* (`woow_ai_task`). It depends on `project`, `mail`,
    `portal`, `bus` and `web`; zh_TW translations included.
@@ -113,7 +116,7 @@ longest connection timeout, plus 60 s.
   again shortly.
 - A threaded cron process needs `db_maxconn` >= both modules' concurrency + 6.
 
-## Once installed: keep the three modules in every image
+## Once installed: keep the four modules in every image
 
 The module adds a **global record rule on `discuss.channel`** whose domain
 uses one of its computed fields, plus views and crons. Every image that
@@ -121,17 +124,18 @@ serves the database must therefore contain `woow_ai_task` as long as it is
 installed: without its code, every non-superuser channel read fails (Discuss,
 Live Chat and portal chats break site-wide).
 
-Ship the three modules together, in every image (rollback images included):
+Ship the four modules together, in every image (rollback images included):
 for paas-odoo-ci, `addons-sources.py sync --modules
-woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification`
-and the same three names in `paas-addons.list` and `cloud-addons.list`. Odoo
+woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail`
+and the same four names in `paas-addons.list` and `cloud-addons.list`. Odoo
 installs a bridge by itself only while one of its dependencies is being
 installed; `-u`, `-u all` and *Update Apps List* never install a new module.
 So when a bridge reaches a database after `woow_ai_task` and the portal
 module it bridges are both installed, install it explicitly (it is
 harmless): `-i woow_ai_task_portal_discuss` where `woow_odoo_portal_discuss`
 is installed, `-i woow_ai_task_portal_notification` where
-`woow_portal_notification_discuss` is (or from Apps). Never install a bridge
+`woow_portal_notification_discuss` is, `-i woow_ai_task_snailmail` where
+`snailmail` is (or from Apps). Never install a bridge
 where its other side is missing: that would install the other side too.
 
 Module operations from Apps or `odoo shell` (install, upgrade, uninstall:
@@ -149,9 +153,9 @@ hook first switches the global rule off, removes the people from the task
 chats (the AI bots stay) and archives the chats (history kept, readable by
 system administrators); Odoo then deletes the module's records (the rule
 first) and only after that its fields and tables. Uninstalling it also
-uninstalls its two bridges (`woow_ai_task_portal_discuss`,
-`woow_ai_task_portal_notification`): they hold nothing but their code and
-one portal card, so there is nothing to restore. Only a module that depends
+uninstalls its three bridges (`woow_ai_task_portal_discuss`,
+`woow_ai_task_portal_notification`, `woow_ai_task_snailmail`): they hold
+nothing but their code and one portal card, so there is nothing to restore. Only a module that depends
 on it and must stay installed (for example the PaaS platform, should it
 come to depend on it) blocks the uninstall: then forward-fix, or restore
 the database and filestore snapshot taken before the upgrade.
@@ -188,17 +192,33 @@ the module's tables are missing can still be neutralized.
   http/https/mailto, files are downloaded only from allowlisted hosts with a
   size and time limit (a host that trickles its bytes is cut at the
   deadline), and their type is detected from the content.
-- Files and messages of a task chat: nobody adds someone else's file to a
-  message (Odoo lets employees link any file id), changes or deletes another
-  person's file (system administrators excepted), edits or empties another
-  person's message, gives a message anywhere a task chat message as its
-  parent (Odoo shows a reply's parent with sudo), or creates a task chat
-  message other than by posting it. A file stays in its chat: it is never
-  moved to another document, linked to a message elsewhere or deleted
-  through one. Where Odoo reads a message or a file with sudo instead of
-  `read` (a copy, an export, the values a form's onchange computes, any
-  record that links one, such as the full composer's parent), a task chat
-  message or file needs read access to its chat.
+- Reading a task chat message: Odoo reads messages with sudo wherever it
+  does not call `read` (copies, exports through any model, the values an
+  onchange computes, delegated fields, template rendering). The module's one
+  read check sits where all of them meet (`mail.message.fetch`): outside
+  superuser, a message of a task chat is read only by someone who can read
+  that chat now (its task, and for the internal chat the projects whose
+  internal text it used), whatever way its id arrived; searches leave those
+  messages out too (Odoo lets their authors and notified partners find
+  them). For other people a task chat message's name (shown with sudo where
+  a record links it) is "Task AI chat". The content of a task chat's file
+  read with sudo through another model (snailmail's letter) is empty for
+  someone who cannot read the chat.
+- Links, checked on the rows as stored (any id type, any command shape;
+  superuser included unless Odoo itself needs it): no message anywhere gets a
+  task chat message as its parent unless it is in that chat; a task chat's
+  file is never on a message elsewhere, never moved to another document,
+  never deleted through a message elsewhere, never put in a letter, and a
+  task chat message carries only files of the chat its author uploaded (the
+  AI's replies carry the module's files); no sub-channel is made of a task
+  chat or from one of its messages; outside superuser no file is created in
+  a task chat directly, no message is created there other than by posting
+  it, nobody changes or deletes another person's file (system
+  administrators excepted), edits or empties another person's message, or
+  changes another person's link previews.
+- Roles that can read everything anyway: system administrators (code,
+  rules), Mail Template Editors (a template may call `.sudo()`); Access
+  Rights administrators can grant themselves anything.
 - Call logs hold status and timing only, unless *Log Request Content* is on
   for a connection (turning it off erases the stored content).
 

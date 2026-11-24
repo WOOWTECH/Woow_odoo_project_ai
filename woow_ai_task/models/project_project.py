@@ -57,7 +57,8 @@ class ProjectProject(models.Model):
         string='Project Text for the Internal AI', groups=PROJECT_USER_GROUP,
         help='Sent to the internal AI with every question, after its own prompt. The internal chat of a task is '
              'only for colleagues who can read this project too (a task follower may read a task of a project '
-             'hidden to them): whoever reads the chat, earlier answers included, may read this text.')
+             'hidden to them), also after the task moves to another project: whoever reads the chat, earlier '
+             'answers included, may read this text.')
     woow_project_ai_customer_brief = fields.Text(
         string='Project Text for the Customer AI', groups=PROJECT_USER_GROUP,
         help='Sent to the customer AI with every question, after its own prompt. The only project text the '

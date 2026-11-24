@@ -2,7 +2,7 @@
 
 Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，每張任務最多兩個 AI 對話（選了哪個助理才有哪個對話）：
 
-- **內部 AI 對話**：有專案權限、看得到這張任務和它的專案的同事（內部 AI 的回答用到專案說明）。
+- **內部 AI 對話**：有專案權限、看得到這張任務和它的專案的同事，以及看得到回答用過內部說明的每個專案（任務換到別的專案時，先前的回答只留給讀得到舊專案的人）。
 - **客戶 AI 對話**：看得到這張任務的 portal 用戶，也顯示在 portal 的任務頁；專案要分享給 portal 用戶才有。
 
 每個助理用一條 **AI 連線**，接 n8n webhook 或 LiteLLM（OpenAI 相容）。
@@ -16,6 +16,7 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 | `woow_ai_task` | 18.0.1.0.0 | 專案 AI：每張任務的內部／客戶 AI 對話 |
 | `woow_ai_task_portal_discuss` | 18.0.1.0.0 | 橋接模組，裝了 `woow_odoo_portal_discuss` 就自動安裝：任務對話不出現在 `/my/discussions`、它的分頁和卡片 |
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | 橋接模組，裝了 `woow_portal_notification_discuss` 就自動安裝：通知中心的未讀對話數只算 `/my/discussions` 列出的對話；客戶的任務 AI 對話未讀訊息另有通知和 `/my` 卡片，連到任務頁 |
+| `woow_ai_task_snailmail` | 18.0.1.0.0 | 橋接模組，裝了 `snailmail`（Odoo 裝 `mail` 時會一起裝）就自動安裝：任務 AI 對話的檔案永遠不會放進郵寄信件 |
 
 ## 功能
 
@@ -29,7 +30,7 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 
 ## 安裝
 
-1. 把整個 repo 放進 addons path：兩個橋接模組也要在，Odoo 才會在安裝它們橋接的模組時一起裝上。
+1. 把整個 repo 放進 addons path：三個橋接模組也要在，Odoo 才會在安裝它們橋接的模組時一起裝上。
 2. 安裝「Project AI」（`woow_ai_task`），相依 `project`、`mail`、`portal`、`bus`、`web`；內含繁體中文翻譯。
 3. 設定在「專案 > 配置 > 專案 AI」（限系統管理員）：「AI 連線」「AI 助理」「回覆工作」「呼叫紀錄」「AI 用量」。再到各專案表單的「AI 助理」頁選助理。
 
@@ -44,15 +45,15 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 - 只有一個排程執行緒時，`limit_time_real_cron` 要容得下兩輪（Discuss AI 的先跑）；不夠時本模組的回覆改用執行緒模式。剩下的時間不夠回一則時，這一輪不開始回覆，稍後再跑。
 - 執行緒式（threaded）排程程序的 `db_maxconn` 至少是兩個模組的同時回覆數相加再加 6。
 
-## 裝了以後：每個映像都要帶著這三個模組
+## 裝了以後：每個映像都要帶著這四個模組
 
 模組在 `discuss.channel` 加了一條**全域 record rule**，規則用到本模組的計算欄位，還有畫面和排程。只要資料庫裝著 `woow_ai_task`，每個服務這個資料庫的映像都必須帶著它：少了它的程式，每個非 superuser 的頻道讀取都會失敗（Discuss、Live Chat、portal 對話全站壞掉）。
 
-三個模組一起放進每個映像（回復用的映像也是）：paas-odoo-ci 用 `addons-sources.py sync --modules woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification`，`paas-addons.list` 和 `cloud-addons.list` 也寫這三個名稱。Odoo 只在橋接模組的某個相依模組正在安裝時才會自動裝它；`-u`、`-u all` 和「更新應用程式清單」都不會安裝新模組。所以橋接模組比 `woow_ai_task` 和它橋接的 portal 模組晚到資料庫時，要明確安裝（沒有副作用）：裝了 `woow_odoo_portal_discuss` 的資料庫 `-i woow_ai_task_portal_discuss`，裝了 `woow_portal_notification_discuss` 的 `-i woow_ai_task_portal_notification`（或從「應用程式」安裝）。另一邊沒裝的資料庫不要裝橋接模組：會連另一邊一起裝上。
+四個模組一起放進每個映像（回復用的映像也是）：paas-odoo-ci 用 `addons-sources.py sync --modules woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail`，`paas-addons.list` 和 `cloud-addons.list` 也寫這四個名稱。Odoo 只在橋接模組的某個相依模組正在安裝時才會自動裝它；`-u`、`-u all` 和「更新應用程式清單」都不會安裝新模組。所以橋接模組比 `woow_ai_task` 和它橋接的 portal 模組晚到資料庫時，要明確安裝（沒有副作用）：裝了 `woow_odoo_portal_discuss` 的資料庫 `-i woow_ai_task_portal_discuss`，裝了 `woow_portal_notification_discuss` 的 `-i woow_ai_task_portal_notification`，裝了 `snailmail` 的 `-i woow_ai_task_snailmail`（或從「應用程式」安裝）。另一邊沒裝的資料庫不要裝橋接模組：會連另一邊一起裝上。
 
 從「應用程式」或 `odoo shell` 做的模組操作（安裝、升級、解除安裝：`button_immediate_*`）在資料庫有任何排程正在執行時會被拒絕（畫面會說 Odoo 正在處理排程動作），而 AI 派送排程（本模組和 `woow_ai_contact` 的）和成員同步掃描每一輪都佔著自己的排程。請在空檔操作；或先把系統參數 `woow_ai_task.job_runner`（和 `woow_ai_contact.job_runner`）設成 `thread`，等目前這一輪結束；或停掉排程程序（排程 pod 設 `max_cron_threads=0`）再試。命令列的 `odoo -i`／`-u` 不受這個鎖影響。
 
-要拿掉時，**在帶著這個模組的映像上解除安裝**。解除安裝會先關掉那條全域規則，把任務對話的人都移出（AI 機器人留下）、對話封存（歷史保留、只有系統管理員讀得到）；Odoo 接著先刪本模組的資料（規則先刪），最後才刪欄位與資料表。解除安裝它也會一起解除安裝兩個橋接模組（`woow_ai_task_portal_discuss`、`woow_ai_task_portal_notification`）：它們只有程式和一張 portal 卡片，沒有東西需要還原。只有必須留著、又相依它的模組（例如日後相依它的 PaaS 平台）才會擋住解除安裝：那時只能往前修，或還原升級前的資料庫與檔案庫快照。
+要拿掉時，**在帶著這個模組的映像上解除安裝**。解除安裝會先關掉那條全域規則，把任務對話的人都移出（AI 機器人留下）、對話封存（歷史保留、只有系統管理員讀得到）；Odoo 接著先刪本模組的資料（規則先刪），最後才刪欄位與資料表。解除安裝它也會一起解除安裝三個橋接模組（`woow_ai_task_portal_discuss`、`woow_ai_task_portal_notification`、`woow_ai_task_snailmail`）：它們只有程式和一張 portal 卡片，沒有東西需要還原。只有必須留著、又相依它的模組（例如日後相依它的 PaaS 平台）才會擋住解除安裝：那時只能往前修，或還原升級前的資料庫與檔案庫快照。
 
 `odoo-bin neutralize`（測試用副本）：AI 連線清空網址與金鑰並封存，n8n 的「可給客戶使用」取消，推送金鑰撤銷；每個資料表都先用 `to_regclass` 檢查。
 
@@ -67,7 +68,9 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 - 連線（網址、金鑰）與提示詞只有系統管理員看得到；金鑰讀不出來、不會送到瀏覽器；推送金鑰只存雜湊。專案經理只讀得到 AI 助理的名稱。
 - 任務摘要用提問者本人的權限讀，不用 sudo；客戶對話只拿 portal 可讀的任務欄位。
 - 後端的回覆一律當成不可信：HTML 跳脫、連結只限 http/https/mailto、檔案只從白名單網域下載並限大小與時間（慢慢送資料的主機在期限到時就切斷）、類型依內容判斷。
-- 任務對話的訊息與檔案：不能把別人的檔案加進訊息（Odoo 讓員工連結任何檔案 id）、不能改或刪別人的檔案（系統管理員除外）、不能編輯或清空別人的訊息、任何地方的訊息都不能拿任務對話的訊息當回覆的上層訊息（Odoo 用 sudo 顯示上層訊息）、任務對話的訊息只能用發言建立。檔案留在自己的對話：不能移到別的文件、不能連到別處的訊息，也不能透過別處的訊息刪除。Odoo 用 sudo 而不是 `read` 讀訊息或檔案的地方（複製、匯出、表單 onchange 算出的值、任何連到它們的記錄，例如完整編輯器的上層訊息），任務對話的訊息或檔案都要讀得到它的對話才行。
+- 讀任務對話的訊息：Odoo 在沒有呼叫 `read` 的地方都用 sudo 讀訊息（複製、經由任何模型的匯出、onchange 算出的值、委派欄位、範本渲染）。本模組唯一的讀取檢查放在這些路徑的交會點（`mail.message.fetch`）：非 superuser 時，任務對話的訊息只給現在讀得到那個對話的人（它的任務；內部對話還有回答用過內部說明的專案），不管 id 是怎麼來的；搜尋也會略過這些訊息（Odoo 讓作者和被通知的人找得到它們）。其他人看到任務對話訊息的名稱（記錄連到它時 Odoo 用 sudo 顯示）是「Task AI chat」。經由別的模型用 sudo 讀任務對話檔案的內容（snailmail 的信件）時，讀不到對話的人拿到的是空的。
+- 連結一律檢查存進資料庫的結果（不管 id 型別、指令形式；除非 Odoo 本身需要，superuser 也一樣）：任何地方的訊息都不能拿任務對話的訊息當上層訊息，除非它就在那個對話裡；任務對話的檔案不能放在別處的訊息、不能移到別的文件、不能透過別處的訊息刪除、不能放進郵寄信件，任務對話的訊息只能帶它的作者在這個對話上傳的檔案（AI 的回覆帶本模組建立的檔案）；不能從任務對話或它的訊息建立子頻道；非 superuser 時不能直接在任務對話建立檔案、訊息只能用發言建立、不能改或刪別人的檔案（系統管理員除外）、不能編輯或清空別人的訊息、不能改別人訊息的連結預覽。
+- 本來就讀得到一切的角色：系統管理員（程式、規則）、郵件範本編輯者（範本可以呼叫 `.sudo()`）；存取權限管理員可以給自己任何權限。
 - 呼叫紀錄只有狀態與時間，除非連線開了「記錄請求內容」（關掉時清除已存的內容）。
 
 ## Repo

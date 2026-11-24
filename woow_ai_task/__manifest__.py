@@ -58,7 +58,8 @@ Odoo modules only; it installs next to the Discuss AI modules
   woow_ai_task_portal_notification with the portal notification centre) is
   installed automatically: task chats stay out of /my/discussions and its
   counts, and the centre counts their unread messages apart (a link to the
-  task). Keep the three modules together on the addons path and in every
+  task); with snailmail, woow_ai_task_snailmail keeps their files out of
+  letters. Keep the four modules together on the addons path and in every
   image (README.md)
 
 See README.md and docs/PROTOCOL.md in the repository.

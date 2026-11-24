@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 12:24+0000\n"
-"PO-Revision-Date: 2026-11-24 12:24+0000\n"
+"POT-Creation-Date: 2026-11-24 15:22+0000\n"
+"PO-Revision-Date: 2026-11-24 15:22+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -85,11 +85,11 @@ msgstr "客戶在這張任務的客戶 AI 對話中留言，但 AI 沒能回覆�
 
 #. module: woow_ai_task
 #. odoo-python
-#: code:addons/woow_ai_task/models/ir_attachment.py:0
+#: code:addons/woow_ai_task/models/mail_message.py:0
 msgid ""
-"A file of a task AI conversation stays in that conversation: it cannot be "
-"added to a message elsewhere."
-msgstr "任務 AI 對話的檔案只能留在那個對話：不能加到別處的訊息。"
+"A file of a task AI conversation stays in that conversation, and a message "
+"there carries only files its author uploaded there."
+msgstr "任務 AI 對話的檔案只能留在那個對話，而對話裡的訊息只能帶作者本人在那裡上傳的檔案。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -135,6 +135,12 @@ msgid ""
 "A system administrator must fix this in Project > Configuration > Project "
 "AI."
 msgstr "請系統管理員到「專案 > 配置 > 專案 AI」處理。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/discuss_channel.py:0
+msgid "A task AI conversation has no threads."
+msgstr "任務 AI 對話沒有討論串。"
 
 #. module: woow_ai_task
 #: model:ir.model.constraint,message:woow_ai_task.constraint_discuss_channel_woow_project_ai_tab_check
@@ -333,11 +339,6 @@ msgid "Backend"
 msgstr "後端"
 
 #. module: woow_ai_task
-#: model:ir.model,name:woow_ai_task.model_base
-msgid "Base"
-msgstr ""
-
-#. module: woow_ai_task
 #: model:ir.model.fields.selection,name:woow_ai_task.selection__project_project__woow_project_ai_customer_state__blocked
 #: model:ir.model.fields.selection,name:woow_ai_task.selection__project_project__woow_project_ai_internal_state__blocked
 #: model:ir.model.fields.selection,name:woow_ai_task.selection__woow_project_ai_connection__readiness__blocked
@@ -419,6 +420,12 @@ msgstr "連線可給客戶使用"
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_res_partner
 msgid "Contact"
+msgstr ""
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_mail_mail__body
+#: model:ir.model.fields,field_description:woow_ai_task.field_mail_message__body
+msgid "Contents"
 msgstr ""
 
 #. module: woow_ai_task
@@ -684,6 +691,12 @@ msgid "Files Users Send"
 msgstr "使用者傳送的檔案"
 
 #. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid "Files are added to a task AI conversation by posting them there."
+msgstr "檔案要在任務 AI 對話中發言時才能加入。"
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
 msgid "Files in AI Replies"
 msgstr "AI 回覆中的檔案"
@@ -841,13 +854,6 @@ msgid ""
 msgstr "圖片一律直接附上。文件原檔送出（Odoo 不轉換）或只給連結。n8n 後端收到的每個附件都是簽名下載連結（由流程自行下載）。"
 
 #. module: woow_ai_task
-#. odoo-python
-#: code:addons/woow_ai_task/models/discuss_channel.py:0
-msgid ""
-"In a task AI conversation you can only add files you uploaded yourself."
-msgstr "在任務 AI 對話中，只能加入您自己上傳的檔案。"
-
-#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Internal"
 msgstr "內部"
@@ -883,9 +889,25 @@ msgid "Internal AI Status Details"
 msgstr "內部用 AI 狀態說明"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_discuss_channel__woow_project_ai_brief_project_ids
+msgid ""
+"Internal chat: the projects whose internal text the AI got for an answer "
+"here. The chat stays with people who can read every one of them (a task "
+"moved to another project keeps its earlier answers away from readers of the "
+"new project only)."
+msgstr ""
+"內部對話：AI 在這裡回答時用過內部說明的專案。對話只留給讀得到其中每一個專案的人（任務換到別的專案後，先前的回答不會給只讀得到新專案的人）。"
+
+#. module: woow_ai_task
 #: model:ir.model.fields.selection,name:woow_ai_task.selection__woow_project_ai_call_log__status__invalid_response
 msgid "Invalid Response"
 msgstr "回應格式錯誤"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/tools/ids.py:0
+msgid "Invalid record id: %(id)r"
+msgstr "無效的記錄 id：%(id)r"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -1205,6 +1227,14 @@ msgstr "任務 AI 對話的訊息只有作者本人可以編輯或刪除。"
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/mail_link_preview.py:0
+msgid ""
+"Only its author changes the link previews of a message of a task AI "
+"conversation."
+msgstr "任務 AI 對話訊息的連結預覽只有作者本人可以修改。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/ai_assistant.py:0
 msgid "Only system administrators can change AI assistants."
 msgstr "只有系統管理員可以變更 AI 助理。"
@@ -1296,6 +1326,11 @@ msgstr ""
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
 msgid "Optional: posted once when the customer chat of a task is opened"
 msgstr "選填：任務的客戶對話第一次開啟時張貼一次"
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_mail_mail
+msgid "Outgoing Mails"
+msgstr ""
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
@@ -1443,6 +1478,11 @@ msgstr ""
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Projects"
 msgstr "專案"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_discuss_channel__woow_project_ai_brief_project_ids
+msgid "Projects of the Internal Texts Used"
+msgstr "用過內部說明的專案"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_assistant__project_ids
@@ -1730,11 +1770,12 @@ msgstr "每次提問都會送給客戶 AI，接在它自己的系統指示之後
 msgid ""
 "Sent to the internal AI with every question, after its own prompt. The "
 "internal chat of a task is only for colleagues who can read this project too"
-" (a task follower may read a task of a project hidden to them): whoever "
-"reads the chat, earlier answers included, may read this text."
+" (a task follower may read a task of a project hidden to them), also after "
+"the task moves to another project: whoever reads the chat, earlier answers "
+"included, may read this text."
 msgstr ""
 "每次提問都接在內部 AI "
-"自己的提示詞後面送出。任務的內部對話只給也讀得到這個專案的同事（追蹤任務的人可能讀得到任務、卻讀不到它所屬的專案）：讀得到這個對話（包括先前的回答）的人，都可以讀這段說明。"
+"自己的提示詞後面送出。任務的內部對話只給也讀得到這個專案的同事（追蹤任務的人可能讀得到任務、卻讀不到它所屬的專案），任務換到別的專案後也一樣：讀得到這個對話（包括先前的回答）的人，都可以讀這段說明。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__sequence
@@ -1808,6 +1849,11 @@ msgid "Status"
 msgstr "狀態"
 
 #. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_mail_link_preview
+msgid "Store link preview data"
+msgstr ""
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__openai_stream
 msgid "Stream Replies"
 msgstr "串流回覆"
@@ -1829,6 +1875,12 @@ msgstr "分頁"
 #: model:ir.model,name:woow_ai_task.model_project_task
 msgid "Task"
 msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/mail_message.py:0
+msgid "Task AI chat"
+msgstr "任務 AI 對話"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2094,6 +2146,13 @@ msgstr "客戶 AI 對話的歡迎詞是專案的設定（在專案的「AI 助�
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "This field can only be searched as equal to True or False."
 msgstr "這個欄位只能搜尋等於 True 或 False。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/mail_mail.py:0
+#: code:addons/woow_ai_task/models/mail_message.py:0
+msgid "This message is in a task AI conversation you cannot read."
+msgstr "這則訊息在您讀不到的任務 AI 對話中。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_open_expired

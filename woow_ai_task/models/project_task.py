@@ -15,6 +15,7 @@ from markupsafe import Markup
 from odoo import Command, api, fields, models
 from odoo.exceptions import AccessError, MissingError, UserError
 
+from ..tools.ids import as_id, require_int_ids
 from .discuss_channel import html_to_text, is_sync, with_sync
 from .project_project import DEFAULT_PAUSE_MINUTES, PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
@@ -92,10 +93,11 @@ class ProjectTask(models.Model):
         """(sudo) The AI conversation of this task's `tab`, found through the
         conversation's own link, or an empty recordset."""
         self.ensure_one()
-        if not isinstance(self.id, int):
+        task_id = as_id(self.id)
+        if not task_id:
             return self.env['discuss.channel'].sudo()
         return self.env['discuss.channel'].sudo().with_context(active_test=False).search([
-            ('woow_project_ai_task_id', '=', self.id), ('woow_project_ai_tab', '=', tab)], limit=1)
+            ('woow_project_ai_task_id', '=', task_id), ('woow_project_ai_tab', '=', tab)], limit=1)
 
     # --- Guards ---
 
@@ -124,10 +126,10 @@ class ProjectTask(models.Model):
         """True when `user` may be in the AI conversation `tab` of this task now:
         an active user of the tab's audience (internal chat: employees with
         Project rights who can read the task's project too, as the internal
-        project text the AI gets, and quotes, is the project's; customer chat:
-        portal users and employees) who can read the task by Odoo's own rules
-        (portal: the portal task rules), over all of their active companies.
-        Never sudo."""
+        project text the AI gets, and quotes, is the project's, and every
+        project whose text an earlier answer used; customer chat: portal users
+        and employees) who can read the task by Odoo's own rules (portal: the
+        portal task rules), over all of their active companies. Never sudo."""
         self.ensure_one()
         if not user or not user.active or user._is_public():
             return False
@@ -142,10 +144,13 @@ class ProjectTask(models.Model):
                 return False
             # the internal chat carries the project's internal text (in the AI's answers too): only for
             # people who can read the project, not only the task (a follower of a task in a project hidden
-            # to them)
-            project = task.sudo().project_id
-            if tab == TAB_INTERNAL and project:
-                return project.with_env(task.env).has_access('read')
+            # to them), and every earlier project whose text it used (a task moved to another project)
+            if tab == TAB_INTERNAL:
+                projects = task.sudo().project_id
+                chat = task.sudo()._woow_project_ai_tab_channel(TAB_INTERNAL)
+                if chat:
+                    projects |= chat.woow_project_ai_brief_project_ids
+                return all(project.with_env(task.env).has_access('read') for project in projects)
             return True
         except AccessError:
             return False
@@ -177,6 +182,7 @@ class ProjectTask(models.Model):
             dict: channel_id, readonly (archived task: the tab can only be read)
         """
         self.ensure_one()
+        require_int_ids(self)
         if tab not in TABS:
             raise UserError(self.env._('Unknown AI tab.'))
         self.check_access('read')  # the current user's own rights (an RPC: never sudo here)
