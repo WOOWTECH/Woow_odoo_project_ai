@@ -5,7 +5,8 @@
              Odoo's own rules (internal conversations: employees with Project rights who can read the task's project too). A member who lost the access is still
              listed until the next membership sync, but reads nothing any more. Global: everybody, administrators
              included. Every other channel: unchanged, for every user (woow_project_ai_task_id is empty, the
-             domain is true there: models/discuss_channel.py _woow_project_ai_readable_domain). -->
+             domain is true there: models/discuss_channel.py _search_woow_project_ai_readable, the user's readable task
+             chats computed once per transaction). -->
         <record id="rule_discuss_channel_woow_project_ai" model="ir.rule">
             <field name="name">Project AI task chat: only people who can read the task</field>
             <field name="model_id" ref="mail.model_discuss_channel"/>

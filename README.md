@@ -200,10 +200,16 @@ the module's tables are missing can still be neutralized.
   that chat now (its task, and for the internal chat the projects whose
   internal text it used), whatever way its id arrived; searches leave those
   messages out too (Odoo lets their authors and notified partners find
-  them). For other people a task chat message's name (shown with sudo where
-  a record links it) is "Task AI chat". The content of a task chat's file
-  read with sudo through another model (snailmail's letter) is empty for
-  someone who cannot read the chat.
+  them, and the Inbox counter drops their unread mentions once they lose the
+  chat). For other people a task chat message's name (shown with sudo where
+  a record links it) is "Task AI chat", a task chat file's name is "Task AI
+  chat file", and its content read with sudo through another model
+  (snailmail's letter, in an onchange too) is empty, also in a request
+  without a user. Settings > Technical > Emails leaves out the mails of
+  messages its reader cannot read. The rule of the task chats a user may
+  read is compiled once per transaction (again after a group or an access
+  change) and evaluated by PostgreSQL for task chats only; which channels
+  are task chats is kept per process for channels that exist only.
 - Links, checked on the rows as stored (any id type, any command shape;
   superuser included unless Odoo itself needs it): no message anywhere gets a
   task chat message as its parent unless it is in that chat; a task chat's
@@ -214,10 +220,16 @@ the module's tables are missing can still be neutralized.
   chat or from one of its messages; nobody but the module joins a task chat
   (member rows); outside superuser no file is created in a task chat
   directly (a model name given as bytes or as XML-RPC base64, or in a
-  default, too), no message is created there other than by posting
-  it, nobody changes or deletes another person's file (system
+  default, too), nobody changes or deletes another person's file (system
   administrators excepted), edits or empties another person's message, or
-  changes another person's link previews.
+  changes another person's link previews; a message is created in a task
+  chat only by posting it there, superuser included (Odoo's own notices
+  and the AI's answers post; the mass-mail composer cannot put a message
+  there); reactions come only from members who may read the chat; no
+  rating is linked to a task chat message. Mentioning a colleague who may
+  be in a task chat but has not opened its tab adds them to it (as the tab
+  would; muted in a customer chat): Odoo shows a mention in the recipient's
+  own environment, where only members read the chat.
 - Roles that can read everything anyway: system administrators (code,
   rules), Mail Template Editors (a template may call `.sudo()`); Access
   Rights administrators can grant themselves anything.

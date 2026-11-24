@@ -21,3 +21,4 @@ from . import test_team_review
 from . import test_delta_review
 from . import test_delta2_review
 from . import test_coexistence
+from . import test_redesign_review

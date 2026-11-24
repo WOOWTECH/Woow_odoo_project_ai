@@ -15,6 +15,7 @@ from . import mail_thread
 from . import mail_message
 from . import mail_mail
 from . import mail_link_preview
+from . import rating_rating
 from . import ir_attachment
 from . import bus_bus
 from . import project_collaborator

@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 15:22+0000\n"
-"PO-Revision-Date: 2026-11-24 15:22+0000\n"
+"POT-Creation-Date: 2026-11-24 19:56+0000\n"
+"PO-Revision-Date: 2026-11-24 19:56+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -126,6 +126,12 @@ msgstr ""
 msgid ""
 "A project manager can share the project with portal users (Visibility, "
 "Settings page)."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/rating_rating.py:0
+msgid "A rating cannot be linked to a message of a task AI conversation."
 msgstr ""
 
 #. module: woow_ai_task
@@ -763,6 +769,7 @@ msgstr ""
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
+#: code:addons/woow_ai_task/models/mail_message.py:0
 msgid "Guests cannot write in task AI conversations."
 msgstr ""
 
@@ -1483,6 +1490,11 @@ msgid "Push Key Hash"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_rating_rating
+msgid "Rating"
+msgstr ""
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__readiness
 msgid "Readiness"
 msgstr ""
@@ -1839,9 +1851,20 @@ msgid "Task"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_res_users__woow_project_ai_readable_sql
+msgid "Task AI Chats Rule"
+msgstr ""
+
+#. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/mail_message.py:0
 msgid "Task AI chat"
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid "Task AI chat file"
 msgstr ""
 
 #. module: woow_ai_task
@@ -2289,6 +2312,13 @@ msgstr ""
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "You cannot open this AI conversation: you need access to the task."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/mail_message.py:0
+msgid ""
+"You cannot react in this task AI conversation: you need access to the task."
 msgstr ""
 
 #. module: woow_ai_task

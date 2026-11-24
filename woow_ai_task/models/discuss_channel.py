@@ -108,6 +108,8 @@ TASK_LINK_FIELDS = {'woow_project_ai_task_id', 'woow_project_ai_tab'}
 # restore, starts empty; the link is set when a chat is created and never changes, ids are never reused);
 # started again when it grows past MAX_CACHED_IDS
 TASK_CHAT_CACHE = '_woow_project_ai_task_chat_ids'
+# the module's rule for a user who can read no task chat
+NO_CHAT_SQL = 'SELECT NULL::integer WHERE FALSE'
 MAX_CACHED_IDS = 50000
 # the hourly membership sweep: where it stopped (a channel id, kept with SQL: no cache invalidation), how long
 # one call runs, what it leaves of the cron pass's own time limit, and when a pass out of time goes on
@@ -218,9 +220,9 @@ class DiscussChannel(models.Model):
 
     @api.depends_context('uid')
     def _compute_woow_project_ai_readable(self):
-        # any other channel: readable as far as this module goes, without a query; task chats: the search
-        # method decides (the current user, Odoo's rules), one query for the batch; per user in the cache
-        # (record rule checks read it through filtered_domain)
+        # any other channel: readable as far as this module goes, without a query (the registry cache of the
+        # task chats); task chats: one query for the batch (the user's compiled rule); per user in the cache
+        # (record rule checks read this field through filtered_domain)
         # ids as Odoo matches them in SQL (an id sent as 4242.0 is the channel 4242)
         ids = {channel: channel_id for channel in self if (channel_id := as_id(channel.id))}
         chats = self._woow_project_ai_known_task_chats(set(ids.values())) if ids else set()
@@ -232,70 +234,118 @@ class DiscussChannel(models.Model):
     def _search_woow_project_ai_readable(self, operator, value):
         if operator not in ('=', '!=') or not isinstance(value, bool):
             raise UserError(self.env._('This field can only be searched as equal to True or False.'))
-        domain = self._woow_project_ai_readable_domain()
-        return domain if (operator == '=') == value else ['!'] + domain
+        # the global rule of every channel search: the user's compiled sub-query (built once per transaction);
+        # PostgreSQL evaluates it for task chats only (an ordinary channel matches the first leaf)
+        readable = SQL("(%s)", self._woow_project_ai_readable_query())
+        if (operator == '=') == value:
+            return ['|', ('woow_project_ai_task_id', '=', False), ('id', 'in', readable)]
+        return ['&', ('woow_project_ai_task_id', '!=', False), ('id', 'not in', readable)]
 
     @api.model
-    def _woow_project_ai_readable_domain(self):
-        """Channels the current user (``env.uid``, also under sudo: record
-        rules are evaluated as superuser) may read as far as task AI chats go:
-        every channel that is not one; a task chat while the user can read its
-        task now, by Odoo's own rules over all of the user's active
-        companies; the internal chat only for employees with Project rights
-        who can read the task's project too.
-        For any other channel the domain is always true
-        (``woow_project_ai_task_id`` is empty): the rule changes nothing
-        there, for any user (public, guests, portal, employees, whatever
-        their companies)."""
-        no_task_chat = [('woow_project_ai_task_id', '=', False)]
-        user = self.env['res.users'].sudo().browse(self.env.uid)
-        if not user.exists() or not user.active or user._is_public():
-            return no_task_chat
-        self.flush_model(['woow_project_ai_task_id'])
+    def _woow_project_ai_readable_query(self):
+        """SQL: the ids of the task AI chats the current user (``env.uid``,
+        also under sudo: record rules are evaluated as superuser) may read now
+        under the module's rule, evaluated on the data at each use. The rules
+        are compiled once per transaction and kept in the field cache on the
+        user (``res.users.woow_project_ai_readable_sql``, cleared at the end
+        of the transaction and by ``_woow_project_ai_forget_readable``). A
+        request without a user (``auth='none'``): none. The fields the
+        sub-query reads are flushed first, as Odoo flushes a query's fields
+        before running it."""
+        if not self.env.uid:
+            return SQL(NO_CHAT_SQL)
+        compiled = self.env['res.users'].sudo().browse(self.env.uid).woow_project_ai_readable_sql or {}
+        to_flush = {}
+        for model_name, field_name in compiled.get('flush') or ():
+            to_flush.setdefault(model_name, []).append(field_name)
+        for model_name, field_names in to_flush.items():
+            if model_name in self.env:
+                self.env[model_name].flush_model(field_names)
+        return SQL((compiled.get('code') or NO_CHAT_SQL).replace('%', '%%'))
+
+    @api.model
+    def _woow_project_ai_unreadable_sql(self):
+        """SQL sub-query: the ids of the task chats the current user may not
+        read now."""
+        return SQL("(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL AND id NOT IN (%s))",
+                   self._woow_project_ai_readable_query())
+
+    @api.model
+    def _woow_project_ai_forget_readable(self):
+        """A task chat was created, or a task, project, follower, collaborator,
+        user or group changed: the rule is compiled again, and the per-chat
+        answers of this transaction are computed again, at their next use."""
+        self.env['res.users'].invalidate_model(['woow_project_ai_readable_sql'], flush=False)
+        self.invalidate_model(['woow_project_ai_readable'], flush=False)
+
+    @api.model
+    def _woow_project_ai_readable_sql_of(self, user):
+        """The module's rule for `user`, compiled (its rules and its
+        companies in it, the data not): the task AI chats they may read: a
+        task chat while they can read its task, by Odoo's own rules over all
+        of their active companies; the internal chat only for employees with
+        Project rights who can read the task's project too, and every project
+        whose internal text an answer of the chat used (archived ones too).
+        Membership aside. None for public users, inactive users, users who
+        cannot read tasks, or whenever the rules cannot be evaluated for them
+        (task chats stay closed to them; every other channel is unchanged).
+        Returns {'code': the SQL text, 'flush': [[model, field], ...] it
+        reads}."""
+        none = {'code': NO_CHAT_SQL, 'flush': []}
         try:
+            if not user or not user.active or user._is_public():
+                return none
             # the user's active companies only: an archived company still in their Allowed Companies would
-            # make env.companies (the task rules) raise on every channel
+            # make env.companies (the task rules) raise
+            companies = list(user._get_company_ids())
             Task = self.env['project.task'].with_user(user).with_context(
-                active_test=False, allowed_company_ids=list(user._get_company_ids()))
+                active_test=False, allowed_company_ids=companies)
             if not Task.has_access('read'):
-                return no_task_chat
-            # the user's readable tasks among the tasks that have AI chats (rules applied: not sudo); a
-            # sub-query: nothing is executed here
+                return none
+            # the user's readable tasks among the tasks that have AI chats (their rules applied: not sudo)
             tasks = Task._search([('id', 'in', SQL(
                 "(SELECT woow_project_ai_task_id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))])
-            internal_tasks = None
+            domain = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
             if user._is_internal() and user.has_group(PROJECT_USER_GROUP):
                 # the internal chats: the task's project readable too (its internal text is in the chat)
                 Project = self.env['project.project'].with_user(user).with_context(
-                    active_test=False, allowed_company_ids=list(user._get_company_ids()))
-                readable_projects = Project._search([])
-                internal_tasks = Task._search([
-                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', readable_projects)])
+                    active_test=False, allowed_company_ids=companies)
+                projects = Project._search([])
+                # (the task rules are in `tasks` already: not compiled a second time)
+                internal_tasks = Task.sudo()._search([
+                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', projects)])
+                domain = ['|'] + domain + [
+                    '&', '&', ('woow_project_ai_tab', '=', TAB_INTERNAL),
+                    ('woow_project_ai_task_id', 'in', internal_tasks),
+                    # ... and every project whose internal text an answer used, archived ones too (an explicit
+                    # active leaf: the implicit active filter would skip them)
+                    ('woow_project_ai_brief_project_ids', 'not any',
+                     [('active', 'in', [True, False]), ('id', 'not in', projects)])]
+            # sudo: the rules are in the sub-queries above (the channel rule itself is this sub-query)
+            query = self.sudo().with_context(active_test=False)._search(
+                ['&', ('woow_project_ai_task_id', '!=', False)] + domain)
+            sql = query.select()
+            return {'code': self.env.cr.mogrify(sql.code, sql.params).decode(),
+                    'flush': sorted({(field.model_name, field.name) for field in sql.to_flush})}
         except psycopg2.Error:
             raise  # the transaction is aborted: swallowing it would only move the failure to the next query
         except Exception:  # noqa: BLE001 - AccessError, a task rule that cannot be evaluated for this user...
-            # whatever the user's setup: task chats stay closed to them, every other channel unchanged
             key = (self.env.cr.dbname, user.id)
             if key not in _rule_errors_logged:
                 _rule_errors_logged.add(key)
                 _logger.warning("Project AI: user %s cannot be checked against the task rules; no task AI chat "
                                 "is readable for them", user.id, exc_info=True)
-            return no_task_chat
-        customer = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
-        if internal_tasks is not None:
-            # ... and every project whose internal text an answer of the chat used (a task moved to another
-            # project: the earlier answers stay with the readers of the old project)
-            return ['|', ('woow_project_ai_task_id', '=', False), '|'] + customer + [
-                '&', '&', ('woow_project_ai_tab', '=', TAB_INTERNAL), ('woow_project_ai_task_id', 'in', internal_tasks),
-                ('woow_project_ai_brief_project_ids', 'not any', [('id', 'not in', readable_projects)])]
-        # portal users, and employees without Project rights: the customer chats only
-        return ['|', ('woow_project_ai_task_id', '=', False)] + customer
+            return none
 
     @api.model
     def _woow_project_ai_known_task_chats(self, ids):
         """Those of the channel `ids` (ints) that are task AI chats, from a
         per-process cache on the registry: a query only for ids this process
-        never saw."""
+        never saw. Only channels that exist are remembered (a channel's task
+        link is set in its INSERT and never changes, ids are never reused): an
+        id without a row (a channel not created yet, or not visible to this
+        transaction yet) is asked again next time, so that no lookup can mark
+        a future task chat as an ordinary channel."""
         ids = {i for i in ids if isinstance(i, int)}
         if not ids:
             return set()
@@ -307,11 +357,10 @@ class DiscussChannel(models.Model):
         unknown = [i for i in ids if i not in known]
         if unknown:
             self.flush_model(['woow_project_ai_task_id'])
-            self.env.cr.execute("SELECT id FROM discuss_channel WHERE id = ANY(%s) "
-                                "AND woow_project_ai_task_id IS NOT NULL", [unknown])
-            found = {row[0] for row in self.env.cr.fetchall()}
-            for i in unknown:
-                known[i] = i in found
+            self.env.cr.execute("SELECT id, woow_project_ai_task_id IS NOT NULL FROM discuss_channel "
+                                "WHERE id = ANY(%s)", [unknown])
+            for channel_id, is_chat in self.env.cr.fetchall():
+                known[channel_id] = is_chat
         return {i for i in ids if known.get(i)}
 
     @api.model
@@ -326,12 +375,13 @@ class DiscussChannel(models.Model):
     def _woow_project_ai_readable_chat_ids(self, chat_ids):
         """Those of the task chat ids `chat_ids` that the current user
         (env.uid, also under sudo) may read under the module's rule (one
-        query: their task now, and for the internal chat its project and the
-        projects of the internal texts used; membership aside)."""
+        query: the compiled rule, for these chats)."""
         if not chat_ids:
             return set()
-        return set(self.sudo().with_context(active_test=False).search(
-            [('id', 'in', sorted(chat_ids)), ('woow_project_ai_readable', '=', True)]).ids)
+        readable = self._woow_project_ai_readable_query()
+        rows = self.env.execute_query(SQL("SELECT id FROM discuss_channel WHERE id = ANY(%s) AND id IN (%s)",
+                                          sorted(chat_ids), readable))
+        return {row[0] for row in rows}
 
     # --- Helpers ---
 
@@ -412,7 +462,9 @@ class DiscussChannel(models.Model):
         if not is_sync(self.env) and any(TASK_LINK_FIELDS & set(vals) for vals in vals_list):
             raise AccessError(self.env._('Task AI conversations are created by their task only.'))
         channels = super().create(vals_list)
-        channels._woow_project_ai_check_stored_channels(not is_sync(self.env))
+        if channels._woow_project_ai_check_stored_channels(not is_sync(self.env)):
+            # a new task chat: the readable task chats of this transaction are computed again
+            self._woow_project_ai_forget_readable()
         return channels
 
     def _woow_project_ai_check_stored_channels(self, refuse_links):
@@ -439,6 +491,7 @@ class DiscussChannel(models.Model):
             raise AccessError(self.env._('Task AI conversations are created by their task only.'))
         if thread:
             raise AccessError(self.env._('A task AI conversation has no threads.'))
+        return bool(linked)
 
     def write(self, vals):
         if not is_sync(self.env):
@@ -509,8 +562,10 @@ class DiscussChannel(models.Model):
                 kwargs['subtype_xmlid'] = 'mail.mt_comment'
             self._woow_project_ai_check_post(message_type, kwargs)
             if kwargs.get('partner_ids'):
-                # a mention notifies (and lets read the message) only people who may be in this chat
+                # a mention notifies (and lets read the message) only people who may be in this chat, and joins
+                # those who have not opened its tab yet
                 kwargs['partner_ids'] = self._woow_project_ai_allowed_partner_ids(kwargs['partner_ids'])
+                self._woow_project_ai_join_mentioned(kwargs['partner_ids'])
             # the files of the message are checked as stored (mail_message.py): the chat's own files, the
             # author's own uploads (the AI's replies: the module's files)
             self = self.with_context(**{POST_KEY: PostMarker(self.id)})  # noqa: PLW0642
@@ -523,6 +578,26 @@ class DiscussChannel(models.Model):
                 raise UserError(self.env._('This task is archived: its AI conversations can only be read.'))
             self = self.with_context(**{PIN_KEY: PIN})  # noqa: PLW0642
         return super().set_message_pin(message_id, pinned)
+
+    def _woow_project_ai_join_mentioned(self, partner_ids):
+        """Mentioned people who may be in this chat but have not opened its
+        tab yet: joined, as the tab would (muted in a customer chat). Odoo
+        sends a mention's notification, and shows it in the Inbox, in the
+        recipient's own environment, where its membership rule decides: a
+        non-member could not read the chat there (im_livechat reads it), so
+        the post, and their Inbox, would fail."""
+        self.ensure_one()
+        channel = self.sudo()
+        bots = self._woow_project_ai_bot_partner_ids()
+        members = channel.channel_member_ids.partner_id
+        task, tab = channel.woow_project_ai_task_id, channel.woow_project_ai_tab
+        for partner in self.env['res.partner'].sudo().browse(partner_ids):
+            if partner.id in bots or partner in members:
+                continue
+            users = partner.with_context(active_test=False).user_ids
+            user = next((user for user in users if task._woow_project_ai_user_allowed(user, tab)), None)
+            if user:
+                channel._woow_project_ai_join(user)
 
     def _woow_project_ai_allowed_partner_ids(self, partner_ids):
         """Those of `partner_ids` who may be in this chat now (AI bots too)."""
@@ -546,6 +621,7 @@ class DiscussChannel(models.Model):
             if partner_ids:
                 # an edit that mentions someone: same as a post (Odoo makes them recipients)
                 partner_ids = self._woow_project_ai_allowed_partner_ids(partner_ids)
+                self._woow_project_ai_join_mentioned(partner_ids)
         return super()._message_update_content(message, body, attachment_ids=attachment_ids,
                                                partner_ids=partner_ids, strict=strict, **kwargs)
 
@@ -592,7 +668,7 @@ class DiscussChannel(models.Model):
             if sync:
                 # an AI reply or a push: the members who lost the access meanwhile go first, as for a person's
                 # post (their open pages: the poll leaves the chat out, bus_bus.py)
-                channel._woow_project_ai_sync()
+                channel._woow_project_ai_sync(notifications=False)
             return
         if channel.woow_project_ai_tab == TAB_CUSTOMER and self._woow_project_ai_hidden_from_customers(values):
             raise AccessError(self.env._('The customers read everything in a customer AI chat: internal notes '
@@ -610,7 +686,7 @@ class DiscussChannel(models.Model):
         if sync:
             # the others who lost the access meanwhile (no trigger saw it): removed in this transaction; the
             # message reaches neither their notifications nor their open pages (bus_bus.py)
-            channel._woow_project_ai_sync()
+            channel._woow_project_ai_sync(notifications=False)
 
     def _woow_project_ai_hidden_from_customers(self, values):
         """Whether a comment with these values (``is_internal``,
@@ -667,11 +743,14 @@ class DiscussChannel(models.Model):
         """Remove members of task chats (sudo): like leaving (the client drops
         the conversation, the others see the member list change) but without
         a "left the channel" message."""
+        removed = {}  # channel: partners removed
         for member in with_sync(members.sudo()):
             channel = member.channel_id
             target = member.partner_id or member.guest_id
             _logger.info("Project AI task chat %s (task %s): member %s removed (%s)", channel.id,
                          channel.woow_project_ai_task_id.id, target.display_name if target else member.id, reason)
+            if member.partner_id:
+                removed[channel] = removed.get(channel, self.env['res.partner'].sudo()) | member.partner_id
             member.unlink()
             if target:
                 target._bus_send_store(Store(channel, {'is_pinned': False, 'isLocallyPinned': False}),
@@ -680,6 +759,57 @@ class DiscussChannel(models.Model):
                 'channelMembers': Store.many(member, 'DELETE', only_id=True),
                 'memberCount': channel.member_count,
             })
+        for channel, partners in removed.items():
+            channel._woow_project_ai_clear_lost_notifications(partners)
+
+    def _woow_project_ai_clear_lost_notifications(self, partners=None):
+        """The unread notifications of these task chats' messages (mentions)
+        for partners who may not read the chat now, members or not: marked
+        read, and their Inbox counter updated. The Inbox lists only messages
+        its reader may read (mail_message.py) while its counter counts every
+        unread notification. `partners`: only those (removed members: no
+        access check again); None: every notified partner (one query), each
+        checked."""
+        chats = self.sudo().with_context(active_test=False).filtered('woow_project_ai_task_id')
+        if not chats or (partners is not None and not partners):
+            return
+        self.env['mail.notification'].flush_model(['is_read', 'res_partner_id', 'mail_message_id'])
+        self.env['mail.message'].flush_model(['model', 'res_id'])
+        query = """
+            SELECT m.res_id, n.res_partner_id, array_agg(n.id)
+              FROM mail_notification n
+              JOIN mail_message m ON m.id = n.mail_message_id
+             WHERE m.model = 'discuss.channel' AND m.res_id = ANY(%s)
+               AND n.is_read IS NOT TRUE AND n.res_partner_id IS NOT NULL"""
+        params = [chats.ids]
+        if partners is not None:
+            query += " AND n.res_partner_id = ANY(%s)"
+            params.append(partners.ids)
+        self.env.cr.execute(query + " GROUP BY m.res_id, n.res_partner_id", params)
+        rows = self.env.cr.fetchall()
+        if not rows:
+            return
+        bots = self._woow_project_ai_bot_partner_ids()
+        Partner = self.env['res.partner'].sudo()
+        lost = {}  # partner id: notification ids
+        for chat_id, partner_id, notification_ids in rows:
+            if partner_id in bots:
+                continue
+            if partners is None and chats.browse(chat_id)._woow_project_ai_partner_allowed(Partner.browse(partner_id)):
+                continue
+            lost.setdefault(partner_id, []).extend(notification_ids)
+        for partner_id, notification_ids in lost.items():
+            notifications = self.env['mail.notification'].sudo().browse(notification_ids)
+            notifications.write({'is_read': True})
+            partner = Partner.browse(partner_id)
+            # as Odoo's mark_all_as_read tells the user's open clients
+            partner._bus_send('mail.message/mark_as_read', {
+                'message_ids': notifications.mail_message_id.ids,
+                'needaction_inbox_counter': partner._get_needaction_count(),
+            })
+            _logger.info("Project AI task chats %s: %s unread notification(s) of partner %s marked read (no access "
+                         "to the chat)", sorted({row[0] for row in rows if row[1] == partner_id}),
+                         len(notification_ids), partner_id)
 
     def _woow_project_ai_join(self, user, created=False):
         """Add `user` (allowed: checked by the caller) as a member, once
@@ -714,10 +844,14 @@ class DiscussChannel(models.Model):
             member._woow_project_ai_notify_settings()
         return member
 
-    def _woow_project_ai_sync(self):
+    def _woow_project_ai_sync(self, notifications=True):
         """Bring the members of these task chats in line: the bot of the tab's
         current assistant (other AI bots removed), the people who can still
-        read the task (the others removed). Nobody else is ever added here."""
+        read the task (the others removed). Nobody else is ever added here.
+        `notifications`: also the unread notifications of the chats' messages
+        of everyone who may not read them now, members or not (the triggers
+        and the hourly sweep; a post only takes care of the members it
+        removes)."""
         bot_ids = self._woow_project_ai_bot_partner_ids()
         Member = self.env['discuss.channel.member'].sudo()
         for channel in self.sudo().with_context(active_test=False).filtered('woow_project_ai_task_id'):
@@ -738,6 +872,8 @@ class DiscussChannel(models.Model):
                 self._woow_project_ai_remove_members(to_remove)
             if keep_bot and keep_bot not in channel.channel_member_ids.partner_id:
                 with_sync(channel)._add_members(partners=keep_bot, post_joined_message=False)
+        if notifications:
+            self._woow_project_ai_clear_lost_notifications()
 
     @api.model
     def _woow_project_ai_chats_of(self, tasks):
@@ -746,10 +882,12 @@ class DiscussChannel(models.Model):
 
     @api.model
     def _woow_project_ai_sync_tasks(self, tasks):
+        self._woow_project_ai_forget_readable()
         self._woow_project_ai_chats_of(tasks)._woow_project_ai_sync()
 
     @api.model
     def _woow_project_ai_sync_projects(self, projects):
+        self._woow_project_ai_forget_readable()
         if not projects:
             return
         self.sudo().with_context(active_test=False).search(
@@ -758,6 +896,7 @@ class DiscussChannel(models.Model):
     @api.model
     def _woow_project_ai_sync_partners(self, partners):
         """Task chats where these partners are members (their users' groups or active flag changed)."""
+        self._woow_project_ai_forget_readable()
         partners = partners.exists() if partners else partners
         if not partners:
             return
@@ -1158,6 +1297,7 @@ class DiscussChannel(models.Model):
             if tab == TAB_INTERNAL and task.project_id not in channel.woow_project_ai_brief_project_ids:
                 # the answers will be built from this project's text: the chat stays with its readers
                 channel.woow_project_ai_brief_project_ids = [Command.link(task.project_id.id)]
+                self._woow_project_ai_forget_readable()
         if requester:
             audience = None
             if tab == TAB_INTERNAL:

@@ -12,7 +12,7 @@ from odoo.exceptions import AccessError
 from odoo.tests.common import HttpCase, JsonRpcException, TransactionCase, tagged
 from odoo.tools import mute_logger
 
-from odoo.addons.woow_ai_task.models.discuss_channel import with_sync
+from odoo.addons.woow_ai_task.models.discuss_channel import POST_KEY, PostMarker, with_sync
 
 from .common import BACKEND_POST, AiTaskFixtures, http_response, openai_ok
 
@@ -449,8 +449,9 @@ class TestIndependentReview(AiTaskFixtures, TransactionCase):
         plain = chat.with_user(self.customer).sudo().message_post(body='a plain post', message_type='comment')
         self.assertEqual(plain.subtype_id, self.env.ref('mail.mt_comment'))
         self.assertTrue(self.env['mail.message'].with_user(self.customer).search([('id', '=', plain.id)]))
-        # a note that got in some other way (here: created as superuser) never reaches the customer AI
-        self.env['mail.message'].sudo().create({
+        # a note that got in some other way (legacy data: created with the chat's post marker) never reaches the
+        # customer AI
+        self.env['mail.message'].with_context(**{POST_KEY: PostMarker(chat.id)}).sudo().create({
             'model': 'discuss.channel', 'res_id': chat.id, 'body': 'SECRET STAFF NOTE', 'message_type': 'comment',
             'subtype_id': self.env.ref('mail.mt_note').id, 'author_id': self.staff.partner_id.id})
         self.post(chat, self.customer, 'what is new?')

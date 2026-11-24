@@ -16,11 +16,14 @@ any other id is refused outside superuser):
   file, or adding files to an archived task's chat). Its messages: only
   messages of its chat (mail_message.py), and it is never deleted "through" a
   message elsewhere (mail_thread.py, the delete route below).
-* Its content: other models read a linked file with sudo (snailmail's
-  related ``attachment_datas``, in an onchange as well): ``datas`` is empty
-  for a task-chat file whose chat the real user cannot read under the
-  module's rule (superuser and system administrators excepted). In a user
-  environment Odoo's own attachment checks already apply."""
+* Its content and its name: other models read a linked file with sudo
+  (snailmail's ``attachment_datas`` / ``attachment_fname``, in an onchange
+  as well; the label of any many2one to a file, which Odoo builds with
+  sudo): ``datas`` is empty, and the file's display name a generic label,
+  for a task-chat file whose chat the real user (``env.uid``; none in a
+  request without a user) cannot read under the module's rule (superuser
+  and system administrators excepted). In a user environment Odoo's own
+  attachment checks already apply."""
 
 from odoo import SUPERUSER_ID, api, models
 from odoo.exceptions import AccessError
@@ -71,11 +74,30 @@ class IrAttachment(models.Model):
             if (model, res_id) != ('discuss.channel', chat_id):
                 self._woow_project_ai_refuse_elsewhere(action)
 
+    def _woow_project_ai_sees_every_file(self):
+        """Superuser (env.uid) and system administrators: every file, as
+        Odoo's own checks (crons, the module's jobs, force_storage). A
+        request without a user (``auth='none'``, uid None) is nobody."""
+        return self.env.uid == SUPERUSER_ID or bool(self.env.uid and self.env.user._is_system())
+
+    def _woow_project_ai_hidden_file_ids(self):
+        """Ids (as given) of those of these files that are task-chat files whose
+        chat the real user (env.uid, also under sudo) cannot read now (a new
+        record, an onchange: its origin's)."""
+        if not self._ids or self._woow_project_ai_sees_every_file():
+            return set()
+        chats = self._woow_project_ai_file_chats([attachment._origin.id for attachment in self])
+        if not chats:
+            return set()
+        unreadable = set(chats.values()) - self.env['discuss.channel']._woow_project_ai_readable_cached(
+            set(chats.values()))
+        return {attachment.id for attachment in self if chats.get(as_id(attachment._origin.id)) in unreadable}
+
     def _woow_project_ai_foreign_files(self):
         """Ids of those of these files that are in a task AI chat and that the
         current user did not upload (none for superuser and system
         administrators)."""
-        if self.env.su or not self._ids or self.env.is_system():
+        if self.env.su or not self._ids or (self.env.uid and self.env.is_system()):
             return []
         chats = self._woow_project_ai_file_chats(real_ids(self))
         if not chats:
@@ -152,16 +174,23 @@ class IrAttachment(models.Model):
     @api.depends_context('bin_size', 'uid')
     def _compute_datas(self):
         super()._compute_datas()
-        if self.env.context.get('bin_size') or self.env.uid == SUPERUSER_ID or not self._ids:
-            return
-        if self.env.user._is_system():
+        if self.env.context.get('bin_size'):
             return
         # a new record (an onchange) reads its content from its origin: the origin's chat decides
-        chats = self._woow_project_ai_file_chats([attachment._origin.id for attachment in self])
-        if not chats:
-            return
-        Channel = self.env['discuss.channel']
-        unreadable = set(chats.values()) - Channel._woow_project_ai_readable_cached(set(chats.values()))
+        hidden = self._woow_project_ai_hidden_file_ids()
         for attachment in self:
-            if chats.get(as_id(attachment._origin.id)) in unreadable:
+            if attachment.id in hidden:
                 attachment.datas = False
+
+    @api.depends('name')
+    @api.depends_context('uid', 'lang')
+    def _compute_display_name(self):
+        # Odoo shows the label of a many2one to a file with sudo (web_read), also in an onchange: the name of a
+        # task-chat file only to whoever may read its chat
+        super()._compute_display_name()
+        hidden = self._woow_project_ai_hidden_file_ids()
+        if hidden:
+            label = self.env._('Task AI chat file')
+            for attachment in self:
+                if attachment.id in hidden:
+                    attachment.display_name = label

@@ -13,16 +13,23 @@ installed (the sandbox's coexistence database); elsewhere it is skipped.
 - nothing is shared: models, crons, routes and push keys differ."""
 
 import json
+import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from odoo import Command
 from odoo.exceptions import AccessError
-from odoo.tests.common import HttpCase, new_test_user, tagged
+from odoo.modules.registry import Registry
+from odoo.tests.common import HttpCase, get_db_name, new_test_user, tagged
 
 from odoo.addons.woow_ai_task.tools import media
 
 from .common import BACKEND_POST, TEST_KEY, AiTaskFixtures, openai_ok
+
+try:  # woow_document_management (woow_prod): on the addons path of the coexistence database only
+    from odoo.addons.woow_document_management.tests import test_reg_notification_label as document_labels
+except ImportError:
+    document_labels = None
 
 RULE = 'woow_ai_task.rule_discuss_channel_woow_project_ai'
 
@@ -267,6 +274,24 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
         # nobody of project AI answers there
         self.assertFalse(self.env['woow.project.ai.job'].search([('channel_id', '=', session.id)]))
 
+    def test_livechat_operator_and_chatbot_posts(self):
+        """Odoo's own Live Chat posts (an operator's answer, a chatbot's message, both through the channel's
+        message_post) as before: only task chats need the module's post marker."""
+        if not installed(self.env, 'im_livechat'):
+            self.skipTest('im_livechat is not installed')
+        session, operator = self.livechat_session()
+        self.authenticate(operator.login, operator.login)
+        self.make_jsonrpc_request('/mail/message/post', {
+            'thread_model': 'discuss.channel', 'thread_id': session.id,
+            'post_data': {'body': 'Operator here', 'message_type': 'comment', 'subtype_xmlid': 'mail.mt_comment'}})
+        script = self.env['chatbot.script'].create({'title': 'Helper Bot'})
+        message = session._chatbot_post_message(script, 'Chatbot here')
+        self.assertEqual(message.author_id, script.operator_partner_id)
+        bodies = self.env['mail.message'].sudo().search(
+            [('model', '=', 'discuss.channel'), ('res_id', '=', session.id)]).mapped('body')
+        self.assertTrue(any('Operator here' in body for body in bodies))
+        self.assertTrue(any('Chatbot here' in body for body in bodies))
+
     # --- no double replies ---
 
     def test_no_double_replies(self):
@@ -356,3 +381,18 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
         for url, status in cases:
             with self.subTest(url=url.split('/')[1]):
                 self.assertEqual(self.url_open(url).status_code, status)
+
+
+if document_labels:
+    @tagged('post_install', '-at_install', 'woow_ai_task', 'woow_ai_task_coexistence')
+    class TestDocumentLabelsWithProjectAi(document_labels.TestNotificationLabelFollowsTheReader):
+        """woow_document_management's own test of its message labels ("Restricted folder" / "Restricted
+        document" for whoever cannot read them), run after this module is installed (its at_install run comes
+        before): the task-chat message names extend Odoo's, so that module's override still runs."""
+        allow_inherited_tests_method = True  # Odoo's loader collects a class's own test methods only
+
+        @classmethod
+        def setUpClass(cls):
+            if 'woow_document_management' not in Registry(get_db_name())._init_modules:
+                raise unittest.SkipTest('woow_document_management is not installed')
+            super().setUpClass()

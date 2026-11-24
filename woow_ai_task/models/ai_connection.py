@@ -219,7 +219,8 @@ class WoowProjectAiConnection(models.Model):
         return True
 
     def _check_admin(self):
-        if not self.env.su and not self.env.user.has_group('base.group_system'):
+        # (a request without a user, uid None: nobody)
+        if not self.env.su and not (self.env.uid and self.env.user.has_group('base.group_system')):
             raise AccessError(self.env._('Only system administrators can change AI connections.'))
 
     # --- Readiness ---

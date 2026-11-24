@@ -10,10 +10,11 @@ delegated fields (``mail.mail``), template rendering of ``object.body``.
 message of a task chat is fetched only for someone who can read that chat
 under the module's rule (``woow_project_ai_readable``: its task now, and for
 the internal chat the projects of its texts). The rows are classified from
-the cache with the registry cache of task-chat channel ids (no query), and a
-batch that holds task-chat messages costs one query. ``_search`` leaves
-those messages out of the user's searches too: Odoo lets their authors and
-notified partners find them (inbox, starred, history, read_group).
+the cache with the registry cache of task-chat channel ids (no query; only
+channels that exist are remembered), and the user's readable task chats are
+computed once per transaction. ``_search`` leaves those messages out of the
+user's searches too: Odoo lets their authors and notified partners find them
+(inbox, starred, history, read_group).
 
 Links, checked on the rows as stored (any id type, any command shape):
 
@@ -22,15 +23,23 @@ Links, checked on the rows as stored (any id type, any command shape):
 * a file of a task chat is never on a message elsewhere, and a message of a
   task chat carries only files of that chat uploaded by its author (the
   AI's replies: files the module creates as superuser);
-* outside superuser, a message is created in (or moved into) a task chat
-  only by the chat's own ``message_post``, which checked the post; task chat
-  messages are never written or deleted directly (Odoo's own message actions
-  go through other paths: ``_message_update_content``, checked by the
-  channel; reactions; pins in SQL)."""
+* a message is created in a task chat only by the chat's own
+  ``message_post``, which checked the post, superuser included (Odoo's own
+  notices, the AI's answers and the welcome text all go through it; the
+  mass-mail composer's superuser ``mail.mail`` would otherwise put a message
+  under anyone's name there); outside superuser, none is moved into one, and
+  task chat messages are never written or deleted directly (Odoo's own
+  message actions go through other paths: ``_message_update_content``,
+  checked by the channel; reactions, checked here; pins in SQL).
+
+The task chats in these checks come from SQL joins on the stored rows (not
+the registry cache)."""
 
 from odoo import SUPERUSER_ID, api, fields, models
 from odoo.exceptions import AccessError, UserError
+from odoo.models import NewId
 from odoo.osv import expression
+from odoo.tools import SQL
 
 from ..tools.ids import as_id, real_ids, require_int_ids
 from .discuss_channel import posted_by_this_module
@@ -101,13 +110,49 @@ class MailMessage(models.Model):
         # (as superuser, as mail's own fetch: no field-group check here)
         to_fetch = self.sudo()._determine_fields_to_fetch(names, ignore_when_in_cache=True)
         if not any(field.column_type for field in to_fetch):
-            # no column of the messages is read (nothing, or only the ids of x2many lines): no query added
+            if to_fetch:
+                # only x2many lines (who starred, the replies...): checked first (model / res_id are usually in
+                # the cache already: no query then)
+                self._woow_project_ai_check_records()
             return super().fetch(names)
         # model / res_id come with the asked fields (same query): the rows are then classified from the cache
         names += [name for name in ('model', 'res_id') if name not in names]
         result = super().fetch(names)
         self._woow_project_ai_check_fetched()
         return result
+
+    def _check_access(self, operation):
+        """Odoo's read access check of messages applies the module's rule too:
+        Odoo lets the author and notified partners read a task-chat message,
+        and its own rule check (``filtered_domain`` as superuser, whenever a
+        record rule on messages exists) puts the message's columns in the
+        cache, where a read then finds them without ``fetch``."""
+        result = super()._check_access(operation)
+        if operation != 'read' or self.env.su or not self._ids:
+            return result
+        messages = self - result[0] if result else self
+        forbidden = messages._woow_project_ai_unreadable()
+        if not forbidden:
+            return result
+        if result:
+            return result[0] + forbidden, result[1]
+        return forbidden, lambda: AccessError(self.env._('This message is in a task AI conversation you cannot read.'))
+
+    def _woow_project_ai_unreadable(self):
+        """Those of these messages that are in task chats the current user
+        cannot read (model / res_id from the cache, fetched as superuser if
+        needed; the registry cache of task chats; the readable list)."""
+        real = self.browse([id_ for id_ in self._ids if id_ and not isinstance(id_, NewId)])
+        if not real:
+            return self.browse()
+        real.sudo().fetch(['model', 'res_id'])  # usually in the cache already (no query)
+        channel_of = real._woow_project_ai_chats_in_cache()
+        if not channel_of:
+            return self.browse()
+        Channel = self.env['discuss.channel']
+        chats = Channel._woow_project_ai_known_task_chats(set(channel_of.values()))
+        unreadable = chats - Channel._woow_project_ai_readable_cached(chats) if chats else set()
+        return self.browse([id_ for id_, chat in channel_of.items() if chat in unreadable])
 
     def _woow_project_ai_check_records(self):
         """Refuse these messages when some are task-chat messages the current
@@ -157,8 +202,10 @@ class MailMessage(models.Model):
     def _woow_project_ai_search_exclusion(self, domain):
         """The messages of the task chats the current user cannot read, left
         out: nothing for a domain about other models only; for given channels,
-        the registry cache and one query only when some are task chats;
-        otherwise a sub-query."""
+        the registry cache (one query only for channels it never saw) and the
+        user's readable task chats of this transaction; otherwise a sub-query
+        of the task chats that are not among them (a task chat created later
+        is left out too)."""
         scope = _domain_scope(domain)
         if scope is NO_CHANNEL:
             return None
@@ -169,18 +216,22 @@ class MailMessage(models.Model):
             if not unreadable:
                 return None
             return ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', sorted(unreadable))]
-        unreadable = Channel.sudo().with_context(active_test=False)._search(
-            [('woow_project_ai_task_id', '!=', False), ('woow_project_ai_readable', '=', False)])
-        return ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', unreadable)]
+        # PostgreSQL evaluates the user's compiled rule for messages of task chats only: a message of another
+        # model, or of an ordinary channel, matches one of the first two leaves
+        Channel.flush_model(['woow_project_ai_task_id'])
+        return ['|', '|', ('model', '!=', 'discuss.channel'),
+                ('res_id', 'not in', SQL("(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)")),
+                ('res_id', 'in', SQL("(%s)", Channel._woow_project_ai_readable_query()))]
 
     @api.depends('record_name', 'model', 'res_id')
-    @api.depends_context('uid')
+    @api.depends_context('uid', 'lang')
     def _compute_display_name(self):
-        """The name of a message (record_name) read in SQL, so that a name
-        shown with sudo loads nothing else of the message; for a task-chat
-        message it is the chat's ("<task> | Internal AI"), shown with sudo
-        wherever a record links it (mail.notification, readable by every
-        employee): "Task AI chat" for people who cannot read the chat."""
+        """The name of a task-chat message is the chat's ("<task> | Internal
+        AI"), read in SQL (so that a name shown with sudo loads nothing else of
+        the message), and shown with sudo wherever a record links it
+        (mail.notification, readable by every employee): "Task AI chat" for
+        people who cannot read the chat. Every other message: Odoo's name, and
+        any other module's (super)."""
         self.flush_recordset(['record_name', 'model', 'res_id'])
         # a new record with an origin (an onchange) shows its origin's name
         keys = {message: as_id(message.id) or as_id(message._origin.id) for message in self}
@@ -191,30 +242,40 @@ class MailMessage(models.Model):
             self.env.cr.execute("""
                 SELECT m.id, m.record_name, c.id
                   FROM mail_message m
-                  LEFT JOIN discuss_channel c ON m.model = 'discuss.channel' AND c.id = m.res_id
-                                             AND c.woow_project_ai_task_id IS NOT NULL
+                  JOIN discuss_channel c ON m.model = 'discuss.channel' AND c.id = m.res_id
+                                        AND c.woow_project_ai_task_id IS NOT NULL
                  WHERE m.id = ANY(%s)""", [ids])
             rows = {row[0]: row[1:] for row in self.env.cr.fetchall()}
-        chats = {chat for _name, chat in rows.values() if chat}
+        chat_messages = self.filtered(lambda message: keys[message] in rows)
+        super(MailMessage, self - chat_messages)._compute_display_name()
+        if not chat_messages:
+            return
+        chats = {chat for _name, chat in rows.values()}
         unreadable = set()
-        if chats and self.env.uid != SUPERUSER_ID:
+        if self.env.uid != SUPERUSER_ID:
             unreadable = chats - self.env['discuss.channel']._woow_project_ai_readable_cached(chats)
         convert = self._fields['record_name'].convert_to_display_name
         label = self.env._('Task AI chat')
-        for message in self:
-            row = rows.get(keys[message])
-            if row is None:  # a new record without origin (an onchange): its own values
-                message.display_name = convert(message.record_name, message)
-            else:
-                message.display_name = label if row[1] in unreadable else convert(row[0], message)
+        for message in chat_messages:
+            name, chat = rows[keys[message]]
+            message.display_name = label if chat in unreadable else convert(name, message)
 
     # --- Helpers ---
 
-    def _woow_project_ai_chat_ids(self, extra_ids=()):
-        """Ids of the task AI chats among the channels of these messages (and `extra_ids`)."""
-        ids = {message.res_id for message in self.sudo() if message.model == 'discuss.channel' and message.res_id}
-        ids |= {i for i in extra_ids if _is_int(i)}
-        return self.env['discuss.channel']._woow_project_ai_known_task_chats(ids)
+    def _woow_project_ai_chat_ids(self):
+        """Ids of the task AI chats of these messages, as stored (one query)."""
+        ids = real_ids(self)
+        if not ids:
+            return set()
+        self.flush_recordset(['model', 'res_id'])
+        self.env['discuss.channel'].flush_model(['woow_project_ai_task_id'])
+        self.env.cr.execute("""
+            SELECT DISTINCT c.id
+              FROM mail_message m
+              JOIN discuss_channel c ON m.model = 'discuss.channel' AND c.id = m.res_id
+                                    AND c.woow_project_ai_task_id IS NOT NULL
+             WHERE m.id = ANY(%s)""", [ids])
+        return {row[0] for row in self.env.cr.fetchall()}
 
     def _woow_project_ai_refuse(self):
         raise AccessError(self.env._('Messages of a task AI conversation can only be written, edited and deleted '
@@ -222,32 +283,34 @@ class MailMessage(models.Model):
 
     def _woow_project_ai_check_stored(self, created=False, moved=False):
         """The links of these messages as stored (see the module docstring):
-        one small query (each message, its parent's place, whether it has
-        files), the task chats from the registry cache, and the files' query
+        one small query (each message's task chat, its parent's task chat,
+        whether it has files, joined on the stored rows), and the files' query
         only for messages that have files."""
         ids = real_ids(self)
         if not ids:
             return
         self.flush_recordset()
+        self.env['discuss.channel'].flush_model(['woow_project_ai_task_id'])
         self.env.cr.execute("""
-            SELECT m.id, m.model, m.res_id, p.model, p.res_id,
+            SELECT m.id, mc.id, pc.id,
                    EXISTS (SELECT 1 FROM message_attachment_rel r WHERE r.message_id = m.id)
               FROM mail_message m
+              LEFT JOIN discuss_channel mc ON m.model = 'discuss.channel' AND mc.id = m.res_id
+                                          AND mc.woow_project_ai_task_id IS NOT NULL
               LEFT JOIN mail_message p ON p.id = m.parent_id
+              LEFT JOIN discuss_channel pc ON p.model = 'discuss.channel' AND pc.id = p.res_id
+                                          AND pc.woow_project_ai_task_id IS NOT NULL
              WHERE m.id = ANY(%s)""", [ids])
         rows = self.env.cr.fetchall()
-        channels = {res_id for _id, model, res_id, _pm, _pr, _f in rows if model == 'discuss.channel' and res_id}
-        channels |= {p_res for _id, _m, _r, p_model, p_res, _f in rows if p_model == 'discuss.channel' and p_res}
-        chats = self.env['discuss.channel']._woow_project_ai_known_task_chats(channels)
-        check_chat = (created or moved) and not self.env.su
+        # a new task-chat message: only through the chat's own message_post, superuser included; a move into
+        # one: never outside superuser
+        check_chat = created or (moved and not self.env.su)
         with_files = []
-        for message_id, model, res_id, p_model, p_res, has_files in rows:
-            here = res_id if model == 'discuss.channel' and res_id in chats else None
-            if p_model == 'discuss.channel' and p_res in chats and here != p_res:
+        for message_id, here, parent_chat, has_files in rows:
+            if parent_chat and here != parent_chat:
                 raise AccessError(self.env._('A message of a task AI conversation can only be answered in that '
                                              'conversation.'))
             if here and check_chat and (moved or not posted_by_this_module(self.env, here)):
-                # only the chat's own message_post (which checked the post) creates one, outside superuser
                 self._woow_project_ai_refuse()
             if has_files:
                 with_files.append(message_id)
@@ -320,10 +383,31 @@ class MailMessage(models.Model):
                 self._woow_project_ai_refuse()
         return super().unlink()
 
-    def _message_reaction(self, *args, **kwargs):
-        # an archived task's chats can only be read: no reactions either
-        chats = self._woow_project_ai_chat_ids()
-        if chats and self.env['discuss.channel'].sudo().with_context(active_test=False).browse(list(chats)).filtered(
-                lambda chat: not chat.woow_project_ai_task_id.active):
-            raise UserError(self.env._('This task is archived: its AI conversations can only be read.'))
-        return super()._message_reaction(*args, **kwargs)
+    def _message_reaction(self, content, action, partner, guest, store=None):
+        """Reactions in a task chat (the route runs this as superuser, after
+        Odoo's 'create' check, which also lets in a person the message's
+        parent mentioned): only from a member who may read the chat now;
+        never in an archived task's chats. Superuser itself (env.uid) is not
+        checked."""
+        chat_ids = self._woow_project_ai_chat_ids()
+        if chat_ids:
+            chats = self.env['discuss.channel'].sudo().with_context(active_test=False).browse(sorted(chat_ids))
+            if chats.filtered(lambda chat: not chat.woow_project_ai_task_id.active):
+                raise UserError(self.env._('This task is archived: its AI conversations can only be read.'))
+            if self.env.uid != SUPERUSER_ID:
+                if guest or not partner:
+                    raise AccessError(self.env._('Guests cannot write in task AI conversations.'))
+                for chat in chats:
+                    if partner not in chat.channel_member_ids.partner_id or not chat._woow_project_ai_partner_allowed(
+                            partner):
+                        raise AccessError(self.env._('You cannot react in this task AI conversation: you need '
+                                                     'access to the task.'))
+        return super()._message_reaction(content, action, partner, guest, store=store)
+
+    def _to_store(self, store, /, **kwargs):
+        # the body has a prefetch group of its own: one fetch for the batch with Odoo's columns, as without
+        # this module (it goes through the read check above as any fetch)
+        if self._ids:
+            self.fetch(['body'] + [name for name, field in self._fields.items()
+                                   if field.prefetch is True and field.column_type])
+        return super()._to_store(store, **kwargs)

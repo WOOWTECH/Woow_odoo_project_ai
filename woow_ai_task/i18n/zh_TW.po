@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 15:22+0000\n"
-"PO-Revision-Date: 2026-11-24 15:22+0000\n"
+"POT-Creation-Date: 2026-11-24 19:56+0000\n"
+"PO-Revision-Date: 2026-11-24 19:56+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -127,6 +127,12 @@ msgid ""
 "A project manager can share the project with portal users (Visibility, "
 "Settings page)."
 msgstr "專案經理可以把專案分享給 portal 使用者（專案的「設定」頁 › 「可見性」）。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/rating_rating.py:0
+msgid "A rating cannot be linked to a message of a task AI conversation."
+msgstr "評分不能連到任務 AI 對話的訊息。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -769,6 +775,7 @@ msgstr "分組依據"
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
+#: code:addons/woow_ai_task/models/mail_message.py:0
 msgid "Guests cannot write in task AI conversations."
 msgstr "訪客不能在任務 AI 對話中發言。"
 
@@ -1517,6 +1524,11 @@ msgid "Push Key Hash"
 msgstr "推送金鑰雜湊"
 
 #. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_rating_rating
+msgid "Rating"
+msgstr ""
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__readiness
 msgid "Readiness"
 msgstr "上線檢查"
@@ -1877,10 +1889,21 @@ msgid "Task"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_res_users__woow_project_ai_readable_sql
+msgid "Task AI Chats Rule"
+msgstr "任務 AI 對話規則"
+
+#. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/mail_message.py:0
 msgid "Task AI chat"
 msgstr "任務 AI 對話"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid "Task AI chat file"
+msgstr "任務 AI 對話檔案"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2343,6 +2366,13 @@ msgstr "在任務 AI 對話裡只能用自己的名義發言。"
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "You cannot open this AI conversation: you need access to the task."
 msgstr "您不能開啟這個 AI 對話：需要能讀取這張任務。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/mail_message.py:0
+msgid ""
+"You cannot react in this task AI conversation: you need access to the task."
+msgstr "您不能在這個任務 AI 對話加表情回應：您需要這張任務的存取權。"
 
 #. module: woow_ai_task
 #. odoo-python

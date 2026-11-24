@@ -28,7 +28,7 @@ class MailLinkPreview(models.Model):
               JOIN mail_message m ON m.id = lp.message_id AND m.model = 'discuss.channel'
               JOIN discuss_channel c ON c.id = m.res_id AND c.woow_project_ai_task_id IS NOT NULL
              WHERE lp.id = ANY(%s) AND m.author_id IS DISTINCT FROM %s
-             LIMIT 1""", [ids, self.env.user.partner_id.id])
+             LIMIT 1""", [ids, self.env.user.partner_id.id or None])  # (no user: nobody is the author)
         if self.env.cr.fetchone():
             raise AccessError(self.env._('Only its author changes the link previews of a message of a task AI '
                                          'conversation.'))

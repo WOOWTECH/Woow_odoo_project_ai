@@ -4,16 +4,32 @@
 changed outside superuser (system administrators: Odoo's ACL) on a message of
 a task AI conversation needs read access to that chat under the module's
 rule. Odoo's own notification mails are created as superuser for recipients
-the chat's post check allowed."""
+the chat's post check allowed (they reuse the posted message; a mail that
+would create its own message in a task chat, as the mass-mail composer's, is
+refused by the message's own check, superuser included). Lists leave out the
+mails of task-chat messages the user cannot read."""
 
 from odoo import api, models
 from odoo.exceptions import AccessError
+from odoo.osv import expression
 
 from ..tools.ids import real_ids
 
 
 class MailMail(models.Model):
     _inherit = 'mail.mail'
+
+    @api.model
+    def _search(self, domain, offset=0, limit=None, order=None):
+        # Settings > Technical > Emails (system administrators): mails of task-chat messages the user cannot read
+        # are left out of lists (their subject and author are the message's, read in the user's environment, where
+        # the message read check refuses them); a direct read keeps the refusal; the mail queue runs as superuser
+        if not self.env.su:
+            Message = self.env['mail.message'].sudo()
+            unreadable = Message._search([('model', '=', 'discuss.channel'),
+                                          ('res_id', 'in', self.env['discuss.channel']._woow_project_ai_unreadable_sql())])
+            domain = expression.AND([domain, [('mail_message_id', 'not in', unreadable)]])
+        return super()._search(domain, offset, limit, order)
 
     def _woow_project_ai_check_messages(self):
         ids = real_ids(self)

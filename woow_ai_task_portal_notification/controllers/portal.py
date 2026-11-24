@@ -27,14 +27,19 @@ UNREAD_COUNTER = 'woow_project_ai_unread_chat_count'
 class WoowProjectAiPortalNotification(PortalNotificationDiscuss):
 
     def _wpn_unread_conversations(self):
-        channels = request.env['discuss.channel'].sudo().search(self._get_portal_discussion_domain())
-        if not channels:
-            return 0
-        members = request.env['discuss.channel.member'].sudo().search([
+        # the centre's count (super: every conversation of the customer), less the unread messages of the ones
+        # the /my/discussions list leaves out (the task AI chats, conversations closed or not open to portal
+        # users)
+        total = super()._wpn_unread_conversations()
+        if not total:
+            return total
+        listed = request.env['discuss.channel'].sudo().search(self._get_portal_discussion_domain())
+        others = request.env['discuss.channel.member'].sudo().search([
             ('partner_id', '=', request.env.user.partner_id.id),
-            ('channel_id', 'in', channels.ids),
+            ('channel_id.channel_type', 'in', ['chat', 'group', 'channel']),
+            ('channel_id', 'not in', listed.ids),
         ])
-        return sum(members.mapped('message_unread_counter'))
+        return max(0, total - sum(others.mapped('message_unread_counter')))
 
     def _woow_project_ai_unread_by_task(self):
         """{task id: unread messages} in the task AI chats the portal user is
