@@ -18,10 +18,15 @@ import hmac
 import logging
 import os.path
 import re
+import socket
+import threading
 import time
 from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 from odoo.tools.mimetypes import guess_mimetype
 
@@ -221,19 +226,130 @@ def _now():
     return time.monotonic()
 
 
+def _http_get(url, http, **kwargs):
+    """One GET of a download (tests replace it)."""
+    return http.get(url, **kwargs)
+
+
+class _SocketCutter:
+    """Shuts down the sockets of one download at its ``deadline`` (a
+    ``time.monotonic()`` value). A read blocked inside urllib3 (the status
+    line, the headers, or one 64 KB chunk of a body that trickles in: every
+    byte restarts the socket timeout) then returns at once; ``fired`` tells
+    the reader that it was the deadline."""
+
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.fired = False
+        self._sockets = []
+        self._lock = threading.Lock()
+        self._timer = None
+
+    def track(self, sock):
+        with self._lock:
+            fired = self.fired
+            if not fired:
+                self._sockets.append(sock)
+        if fired:
+            _shutdown(sock)
+
+    def start(self):
+        self._timer = threading.Timer(max(0.0, self.deadline - _now()), self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def cancel(self):
+        if self._timer is not None:
+            self._timer.cancel()
+
+    def _fire(self):
+        with self._lock:
+            self.fired = True
+            sockets = list(self._sockets)
+        for sock in sockets:
+            _shutdown(sock)
+
+
+def _shutdown(sock):
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # already closed
+
+
+def _deadline_session(cutter):
+    """A requests session whose connections give their socket to ``cutter``
+    as soon as they are connected (before the request is sent)."""
+
+    class Connection(HTTPConnection):
+        def connect(self):
+            super().connect()
+            cutter.track(self.sock)
+
+    class SecureConnection(HTTPSConnection):
+        def connect(self):
+            super().connect()
+            cutter.track(self.sock)
+
+    class Pool(HTTPConnectionPool):
+        ConnectionCls = Connection
+
+    class SecurePool(HTTPSConnectionPool):
+        ConnectionCls = SecureConnection
+
+    class Adapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            super().init_poolmanager(*args, **kwargs)
+            self.poolmanager.pool_classes_by_scheme = {'http': Pool, 'https': SecurePool}
+
+    session = requests.Session()
+    session.mount('http://', Adapter())
+    session.mount('https://', Adapter())
+    return session
+
+
+def _refused(error, cutter, what):
+    if cutter is not None and cutter.fired:
+        return DownloadRefused('too slow')
+    return DownloadRefused('%s: %s' % (what, type(error).__name__))
+
+
 def download(url, domains, max_bytes, session=None, deadline=None):
     """Download an allowlisted URL; returns (bytes, final_url).
 
     Redirects are followed by hand (at most MAX_REDIRECTS), each hop must be
     allowlisted too. The body is streamed and the download is stopped as soon
-    as it exceeds ``max_bytes``, or as soon as ``deadline`` (a
-    ``time.monotonic()`` value: the whole download, every hop and chunk) is
-    over: a host that trickles its bytes cannot hold a reply.
+    as it exceeds ``max_bytes``. ``deadline`` (a ``time.monotonic()`` value)
+    bounds the whole download: the read timeouts are capped to the time left,
+    and at the deadline the connection's socket is shut down, so a host that
+    trickles its status line, headers or body cannot hold a reply.
+
+    Every failure (network, TLS, a body cut short, a bad encoding, a
+    malformed redirect) is a DownloadRefused: the file stays a link.
 
     Raises:
         DownloadRefused: with a short reason
     """
-    http = session or requests
+    cutter = _SocketCutter(deadline) if deadline is not None else None
+    own_session = None
+    if session is not None:
+        http = session
+    elif cutter is not None:
+        http = own_session = _deadline_session(cutter)
+    else:
+        http = requests
+    if cutter is not None:
+        cutter.start()
+    try:
+        return _download(url, domains, max_bytes, http, deadline, cutter)
+    finally:
+        if cutter is not None:
+            cutter.cancel()
+        if own_session is not None:
+            own_session.close()
+
+
+def _download(url, domains, max_bytes, http, deadline, cutter):
     current = url
     for _hop in range(MAX_REDIRECTS + 1):
         if not url_allowed(current, domains):
@@ -245,15 +361,18 @@ def download(url, domains, max_bytes, session=None, deadline=None):
                 raise DownloadRefused('too slow')
             timeout = (min(DOWNLOAD_TIMEOUT[0], remaining), min(DOWNLOAD_TIMEOUT[1], remaining))
         try:
-            response = http.get(current, stream=True, allow_redirects=False, timeout=timeout)
-        except requests.RequestException as e:
-            raise DownloadRefused('request failed: %s' % type(e).__name__)
+            response = _http_get(current, http, stream=True, allow_redirects=False, timeout=timeout)
+        except (requests.RequestException, OSError, ValueError) as e:
+            raise _refused(e, cutter, 'request failed') from None
         try:
             if response.status_code in (301, 302, 303, 307, 308):
                 location = response.headers.get('Location')
                 if not location:
                     raise DownloadRefused('redirect without location')
-                current = urljoin(current, location)
+                try:
+                    current = urljoin(current, location)
+                except ValueError:
+                    raise DownloadRefused('bad redirect') from None
                 continue
             if response.status_code != 200:
                 raise DownloadRefused('HTTP %s' % response.status_code)
@@ -261,15 +380,22 @@ def download(url, domains, max_bytes, session=None, deadline=None):
             if length and length.isdigit() and int(length) > max_bytes:
                 raise DownloadRefused('too large (%s bytes)' % length)
             chunks, total = [], 0
-            for chunk in response.iter_content(CHUNK_SIZE):
-                if deadline is not None and _now() > deadline:
-                    raise DownloadRefused('too slow')
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
-                    raise DownloadRefused('too large (> %s bytes)' % max_bytes)
-                chunks.append(chunk)
+            try:
+                for chunk in response.iter_content(CHUNK_SIZE):
+                    if deadline is not None and _now() > deadline:
+                        raise DownloadRefused('too slow')
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise DownloadRefused('too large (> %s bytes)' % max_bytes)
+                    chunks.append(chunk)
+            except (requests.RequestException, OSError) as e:
+                # a body cut short, a read timeout, a bad Content-Encoding, TLS, or the deadline's shutdown
+                raise _refused(e, cutter, 'download failed') from None
+            if (cutter is not None and cutter.fired) or (deadline is not None and _now() > deadline):
+                # the deadline cut a body without length: what arrived is not the whole file
+                raise DownloadRefused('too slow')
             return b''.join(chunks), current
         finally:
             close = getattr(response, 'close', None)

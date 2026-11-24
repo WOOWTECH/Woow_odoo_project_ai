@@ -19,8 +19,12 @@ Ported from woow_ai_contact 18.0.2.0.0 (``woow.ai.usage.month``), with the tab
 in the key.
 """
 
-from odoo import api, fields, models
+import logging
+
+from odoo import SUPERUSER_ID, api, fields, models
 from odoo.tools import sql
+
+_logger = logging.getLogger(__name__)
 
 KEY_INDEX = 'woow_project_ai_usage_month_key_uniq'
 KEY_EXPRESSIONS = ('assistant_id', 'connection_id', "COALESCE(scope_model, '')", 'COALESCE(scope_res_id, 0)',
@@ -56,24 +60,22 @@ class WoowProjectAiUsageMonth(models.Model):
                                     help='Replies that failed: the user got the error message.')
     prompt_tokens = fields.Integer(string='Prompt Tokens', readonly=True)
     completion_tokens = fields.Integer(string='Completion Tokens', readonly=True)
-    total_tokens = fields.Integer(string='Total Tokens', compute='_compute_total_tokens')
+    # kept by the same upsert as the other counters (stored: summed in the list and its groups)
+    total_tokens = fields.Integer(string='Total Tokens', readonly=True)
 
     def init(self):
         # one row per key; NULL scopes and tabs count as the same key (COALESCE)
         sql.create_unique_index(self.env.cr, KEY_INDEX, self._table, list(KEY_EXPRESSIONS))
-
-    @api.depends('prompt_tokens', 'completion_tokens')
-    def _compute_total_tokens(self):
-        for row in self:
-            row.total_tokens = (row.prompt_tokens or 0) + (row.completion_tokens or 0)
 
     @api.depends('scope_model', 'scope_res_id')
     def _compute_scope_name(self):
         for row in self:
             name = ''
             if row.scope_model and row.scope_res_id and row.scope_model in self.env:
-                record = self.env[row.scope_model].sudo().browse(row.scope_res_id).exists()
-                name = record.display_name if record else '%s,%s' % (row.scope_model, row.scope_res_id)
+                record = self.env[row.scope_model].sudo().with_context(active_test=False).browse(
+                    row.scope_res_id).exists()
+                name = record.display_name if record else self.env._('Deleted project (#%(id)s)',
+                                                                      id=row.scope_res_id)
             row.scope_name = name
 
     @api.depends('assistant_id', 'month')
@@ -95,11 +97,11 @@ class WoowProjectAiUsageMonth(models.Model):
         self.env.cr.execute("""
             INSERT INTO woow_project_ai_usage_month
                    (assistant_id, connection_id, surface_type, surface_tab, scope_model, scope_res_id, project_id,
-                    month, replies_ok, replies_failed, prompt_tokens, completion_tokens,
+                    month, replies_ok, replies_failed, prompt_tokens, completion_tokens, total_tokens,
                     create_uid, create_date, write_uid, write_date)
             VALUES (%(assistant)s, %(connection)s, %(surface)s, %(tab)s, %(scope_model)s, %(scope_res_id)s,
                     %(project)s, date_trunc('month', statement_timestamp() AT TIME ZONE 'UTC')::date,
-                    %(ok)s, %(failed)s, %(prompt)s, %(completion)s,
+                    %(ok)s, %(failed)s, %(prompt)s, %(completion)s, %(prompt)s + %(completion)s,
                     %(uid)s, statement_timestamp() AT TIME ZONE 'UTC',
                     %(uid)s, statement_timestamp() AT TIME ZONE 'UTC')
             ON CONFLICT (assistant_id, connection_id, (COALESCE(scope_model, '')), (COALESCE(scope_res_id, 0)),
@@ -109,6 +111,7 @@ class WoowProjectAiUsageMonth(models.Model):
                           prompt_tokens = woow_project_ai_usage_month.prompt_tokens + EXCLUDED.prompt_tokens,
                           completion_tokens = woow_project_ai_usage_month.completion_tokens
                                               + EXCLUDED.completion_tokens,
+                          total_tokens = woow_project_ai_usage_month.total_tokens + EXCLUDED.total_tokens,
                           project_id = COALESCE(EXCLUDED.project_id, woow_project_ai_usage_month.project_id),
                           write_uid = EXCLUDED.write_uid, write_date = EXCLUDED.write_date
         """, {
@@ -126,6 +129,30 @@ class WoowProjectAiUsageMonth(models.Model):
             'uid': self.env.uid,
         })
         self.invalidate_model()
+
+    @api.model
+    def _add_for_channel_after_commit(self, channel, assistant, connection=None):
+        """Count one reply posted in the current transaction (a push) once it
+        is committed, on a READ COMMITTED cursor of its own: in the request's
+        REPEATABLE READ transaction the upsert fails (a serialization failure)
+        whenever a reply of the same month and tab was counted meanwhile.
+        Failures are logged."""
+        db_name = self.env.cr.dbname
+        ids = (channel.id, assistant.id, connection.id if connection else False)
+
+        def count_push():
+            from .ai_job import _job_cursor  # noqa: PLC0415 - ai_job imports this module
+            try:
+                with _job_cursor(db_name) as cr:
+                    env = api.Environment(cr, SUPERUSER_ID, {})
+                    env['woow.project.ai.usage.month']._add_for_channel(
+                        env['discuss.channel'].browse(ids[0]), env['woow.project.ai.assistant'].browse(ids[1]),
+                        env['woow.project.ai.connection'].browse(ids[2]) if ids[2] else None)
+            except Exception:  # noqa: BLE001 - the pushed message stays
+                _logger.exception("Project AI assistant %s: could not record the usage of a push", ids[1])
+
+        count_push.woow_project_ai_usage = ids
+        self.env.cr.postcommit.add(count_push)
 
     @api.model
     def _woow_project_ai_scope_project(self, scope_model, scope_res_id):

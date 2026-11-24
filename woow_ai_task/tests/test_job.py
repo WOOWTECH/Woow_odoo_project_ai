@@ -10,6 +10,7 @@ import requests
 
 from odoo import fields
 from odoo.tests.common import tagged
+from odoo.tools import mute_logger
 
 from odoo.addons.woow_ai_task.models import ai_assistant_reply as reply_module
 from odoo.addons.woow_ai_task.models.ai_job import JOB_MAX_AGE_MINUTES, MAX_JOB_RUNS
@@ -439,7 +440,8 @@ class TestN8nJob(ProjectAiCase):
         body = json.loads(post.call_args.kwargs['data'])
         self.assertEqual(set(body), {'event', 'session_id', 'action', 'sessionId', 'chatInput', 'assistant', 'user',
                                      'channel', 'surface', 'system_prompt', 'message', 'history'})
-        self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': self.project.id,
+        # the portal user follows the task, not the project: no project in the surface (team review 34)
+        self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': None,
                                            'task_id': self.task.id, 'tab': 'customer'})
         self.assertEqual((body['action'], body['sessionId'], body['chatInput']),
                          ('sendMessage', self.env['woow.project.ai.assistant']._session_id(chat),
@@ -587,6 +589,31 @@ class TestN8nJob(ProjectAiCase):
         get.assert_not_called()
         self.assertFalse(job.reply_message_id.attachment_ids)
         self.assertIn('href="https://files.example.com/c.png"', job.reply_message_id.body)
+
+    def test_files_of_an_answer_share_one_budget(self):
+        # (team review 7) the budget is the whole answer's, not one reply's: an n8n answer may carry several
+        payload = {'replies': [{'text': '![a](https://files.example.com/a.png)'},
+                               {'text': '![b](https://files.example.com/b.png)'}]}
+        responses = [http_response(200, chunks=[TINY_PNG]), http_response(200, chunks=[TINY_PNG])]
+        with patch(MEDIA_GET, side_effect=responses), \
+                patch.object(reply_module, 'MAX_REPLY_BYTES', len(TINY_PNG) + 10):
+            chat, job, _post = self.run_n8n(payload)
+        self.assertEqual(job.state, 'done', job.error)
+        files = self.bot_messages(chat, self.n8n).attachment_ids
+        self.assertEqual(files.mapped('name'), ['a.png'], 'the second reply finds the budget used up')
+
+    def test_a_failing_download_keeps_the_answer(self):
+        # (team review 2) whatever goes wrong while a file is read, the answer is posted with the link
+        payload = {'reply': {'text': 'see ![c](https://files.example.com/c.png)', 'attachments': [
+            {'name': 'd.pdf', 'url': 'https://files.example.com/d.pdf'}]}}
+        with patch.object(type(self.n8n), '_fetch_file', side_effect=RuntimeError('socket gone')), \
+                mute_logger('odoo.addons.woow_ai_task.models.ai_assistant_reply'):
+            chat, job, _post = self.run_n8n(payload)
+        self.assertEqual(job.state, 'done', job.error)
+        body = job.reply_message_id.body
+        self.assertIn('href="https://files.example.com/c.png"', body)
+        self.assertIn('href="https://files.example.com/d.pdf"', body)
+        self.assertTrue(self.env['woow.project.ai.call.log'].search([('job_id', '=', job.id)]), 'the call is logged')
 
     def test_multiple_replies_and_skip(self):
         chat, job, _post = self.run_n8n({'replies': [{'text': 'first'}, {'text': 'second'}]})

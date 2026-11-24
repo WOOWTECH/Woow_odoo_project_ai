@@ -298,8 +298,8 @@ class TestReviewMinors(AiTaskFixtures, TransactionCase):
 
         def search_then_delete(channels, domain, *args, **kwargs):
             found = original(channels, domain, *args, **kwargs)
-            if domain == [('woow_project_ai_task_id', '!=', False)]:
-                other_task.unlink()
+            if ('woow_project_ai_task_id', '!=', False) in domain and other_task.exists():
+                other_task.unlink()  # the sweep's own search: its task deleted right after
             return found
 
         self.env.flush_all()

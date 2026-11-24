@@ -38,18 +38,26 @@ class ProjectProject(models.Model):
     woow_project_ai_internal_assistant_id = fields.Many2one(
         'woow.project.ai.assistant', string='Internal AI Assistant', ondelete='restrict', index='btree_not_null',
         groups=PROJECT_USER_GROUP, domain=ASSISTANT_DOMAIN,
-        help='Answers the "Internal AI chat" of every task of this project (employees who can read the task). '
-             'Its backend may look up company data, read only: a property of its AI connection, set up by a '
-             'system administrator.')
+        help='Answers the "Internal AI chat" of every task of this project (colleagues with Project rights who '
+             'can read the task). Its backend may look up company data, read only: a property of its AI '
+             'connection, set up by a system administrator.')
     woow_project_ai_customer_assistant_id = fields.Many2one(
         'woow.project.ai.assistant', string='Customer AI Assistant', ondelete='restrict', index='btree_not_null',
         groups=PROJECT_USER_GROUP, domain=CUSTOMER_ASSISTANT_DOMAIN,
         help='Answers the "Customer AI chat" of every task (portal users who can read the task, also on the '
              'portal task page). Its AI connection must be safe for customers. Empty: no AI on the portal task '
              'page.')
+    woow_project_ai_internal_assistant_description = fields.Text(
+        related='woow_project_ai_internal_assistant_id.description', string='About the Internal AI Assistant',
+        groups=PROJECT_USER_GROUP)
+    woow_project_ai_customer_assistant_description = fields.Text(
+        related='woow_project_ai_customer_assistant_id.description', string='About the Customer AI Assistant',
+        groups=PROJECT_USER_GROUP)
     woow_project_ai_internal_brief = fields.Text(
         string='Project Text for the Internal AI', groups=PROJECT_USER_GROUP,
-        help='Sent to the internal AI with every question, after its own prompt.')
+        help='Sent to the internal AI with every question, after its own prompt, while the colleague who asks '
+             'and every colleague of that chat can read this project (a task follower may read a task of a '
+             'project hidden to them).')
     woow_project_ai_customer_brief = fields.Text(
         string='Project Text for the Customer AI', groups=PROJECT_USER_GROUP,
         help='Sent to the customer AI with every question, after its own prompt. The only project text the '
@@ -177,6 +185,8 @@ class ProjectProject(models.Model):
             problems += details or ['connection_not_ready']
         if tab == TAB_CUSTOMER and not connection.customer_safe:
             problems.append('not_customer_safe')
+        if tab == TAB_CUSTOMER and self.sudo().privacy_visibility != 'portal':
+            problems.append('not_shared')
         return problems
 
     def _woow_project_ai_tab_blocked_reasons(self, tab, assistant=None):
@@ -191,10 +201,16 @@ class ProjectProject(models.Model):
             'connection_not_ready': _('Its AI connection is not ready.'),
             'not_customer_safe': _('Its AI connection is not marked "Safe for Customers": the customer chats get a '
                                    'short notice instead of an answer.'),
+            'not_shared': _('This project is not shared with portal users: no customer can open a customer AI '
+                            'chat.'),
         }
-        reasons = [texts[code] for code in self._woow_project_ai_tab_problems(tab, assistant) if code in texts]
-        if reasons:
+        problems = self._woow_project_ai_tab_problems(tab, assistant)
+        reasons = [texts[code] for code in problems if code in texts]
+        if set(problems) - {'not_shared'}:
             reasons.append(_('A system administrator must fix this in Project > Configuration > Project AI.'))
+        elif problems:
+            reasons.append(_('A project manager can share the project with portal users (Visibility, Settings '
+                             'page).'))
         return reasons
 
     def _woow_project_ai_pause_minutes_value(self):
@@ -202,9 +218,14 @@ class ProjectProject(models.Model):
         minutes = self.sudo().woow_project_ai_pause_minutes or DEFAULT_PAUSE_MINUTES
         return max(1, min(minutes, MAX_PAUSE_MINUTES))
 
-    @api.depends('woow_project_ai_internal_assistant_id', 'woow_project_ai_customer_assistant_id')
+    @api.depends('woow_project_ai_internal_assistant_id', 'woow_project_ai_customer_assistant_id',
+                 'privacy_visibility')
     def _compute_woow_project_ai_state(self):
         _ = self.env._
+        ready = {
+            TAB_INTERNAL: _('Ready: the AI answers every message of the colleagues.'),
+            TAB_CUSTOMER: _("Ready: the AI answers every customer message; a colleague's message pauses it."),
+        }
         for project in self:
             for tab in TABS:
                 assistant = project.sudo()['woow_project_ai_%s_assistant_id' % tab]
@@ -213,7 +234,7 @@ class ProjectProject(models.Model):
                 else:
                     reasons = project._woow_project_ai_tab_blocked_reasons(tab, assistant)
                     state = STATE_BLOCKED if reasons else STATE_OK
-                    reason = '\n'.join(reasons) if reasons else _('Ready: the AI answers every message.')
+                    reason = '\n'.join(reasons) if reasons else ready[tab]
                 project['woow_project_ai_%s_state' % tab] = state
                 project['woow_project_ai_%s_state_reason' % tab] = reason
 

@@ -19,16 +19,17 @@ import {
 
 import { Composer } from "@mail/core/common/composer";
 import { Thread } from "@mail/core/common/thread";
-import { Typing } from "@mail/discuss/typing/common/typing";
 import { useMessageEdition, useMessageHighlight, useMessageToReplyTo } from "@mail/utils/common/hooks";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { useRecordObserver } from "@web/model/relational_model/utils";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
 
 export class WoowProjectAiTaskChat extends Component {
     static template = "woow_ai_task.TaskChat";
-    static components = { Composer, Thread, Typing };
+    // (no Typing of its own: the composer shows who is typing)
+    static components = { Composer, Thread };
     static props = {
         ...standardWidgetProps,
         tab: { type: String },
@@ -48,7 +49,8 @@ export class WoowProjectAiTaskChat extends Component {
         this.messageToReplyTo = useMessageToReplyTo();
         this.contentRef = useRef("content");
         // autofocus: a counter, as in chat windows (Reply, emoji and edit focus the input again); not on open,
-        // which would scroll the form to the composer
+        // which would scroll the form to the composer: Odoo focuses on mount when autofocus + the conversation's
+        // composer.autofocus (shared with Discuss and chat windows) is not 0, so load() starts from minus that
         this.state = useState({
             thread: null,
             readonly: false,
@@ -57,7 +59,6 @@ export class WoowProjectAiTaskChat extends Component {
             jumpPresent: 0,
             autofocus: 0,
         });
-        this.customerPlaceholder = _t("Message to the customer: the AI pauses after you write…");
         this.loadId = 0;
         // the user opened the page: open (create / join) the conversation; not awaited, so
         // "Opening the AI chat…" shows meanwhile
@@ -67,6 +68,14 @@ export class WoowProjectAiTaskChat extends Component {
         onWillUpdateProps((nextProps) => {
             if (nextProps.record.resId !== this.props.record.resId || nextProps.tab !== this.props.tab) {
                 this.follow(nextProps);
+            }
+        });
+        // the task archived (or restored) in this form: the shown tab follows at once (the server refuses
+        // writes in an archived task's chats anyway)
+        useRecordObserver((record) => {
+            const active = record.data.active;
+            if (active !== undefined && this.state.thread) {
+                this.state.readonly = !active;
             }
         });
         // also when destroyed before being mounted
@@ -146,6 +155,7 @@ export class WoowProjectAiTaskChat extends Component {
             // shown here: displayed (no web push, no chat window for its new messages: thread_model_patch.js)
             thread.woowProjectAiEmbedded = true;
             this.state.readonly = result.readonly;
+            this.state.autofocus = -(thread.composer?.autofocus || 0);
             this.state.thread = thread;
             // opening the page reads the conversation (Discuss marks it read when shown too)
             thread.markAsRead();

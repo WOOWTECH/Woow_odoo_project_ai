@@ -314,11 +314,12 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
             'model': 'discuss.channel', 'res_id': customer_chat.id, 'body': 'FAKE GUEST', 'message_type': 'comment',
             'subtype_id': comment, 'author_guest_id': guest.id}])
         self.assertFalse(self.find(customer_chat, 'FAKE'))
-        # without an author, the message is the user's own (Odoo's default author)
-        own_id = self.call_kw('mail.message', 'create', [{
+        # not even under their own name: a task chat message is created by the chat's own post only (team
+        # review 1 / 25: a direct create could also carry a parent or files of other messages)
+        self.refused('mail.message', 'create', [{
             'model': 'discuss.channel', 'res_id': customer_chat.id, 'body': 'NO AUTHOR GIVEN', 'message_type': 'comment',
             'subtype_id': comment}])
-        self.assertEqual(self.env['mail.message'].browse(own_id).author_id, self.customer.partner_id)
+        self.assertFalse(self.find(customer_chat, 'NO AUTHOR GIVEN'))
         # ...and the author change their message (its author included): not in a task chat
         self.http_post(customer_chat, 'my real question')
         own_message = self.find(customer_chat, 'my real question')
@@ -465,7 +466,15 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
         # another site cannot make the customer join (a GET without the page's token): back to the task page
         csrf = odoo.http.Request.csrf_token(self)  # the session's CSRF token is not the open token either
         for forged in ('', '?token=0123456789abcdef', '?token=%s' % csrf, '?csrf_token=%s' % csrf):
+            # the embedded frame: a short page that reloads the task page itself (team review 18)
             response = self.url_open('/my/tasks/%s/woow_project_ai%s' % (self.task.id, forged), allow_redirects=False)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('href="/my/tasks/%s#woow_project_ai_chat"' % self.task.id, response.text)
+            self.assertIn('target="_top"', response.text)
+            # the full page: back to the task page
+            joiner = '&' if forged else '?'
+            response = self.url_open('/my/tasks/%s/woow_project_ai%s%sfull=1' % (self.task.id, forged, joiner),
+                                     allow_redirects=False)
             self.assertIn(response.status_code, (302, 303))
             self.assertIn('/my/tasks/%s#woow_project_ai_chat' % self.task.id, response.headers['Location'])
             self.assertFalse(self.task.woow_project_ai_customer_channel_id)

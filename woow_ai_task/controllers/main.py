@@ -119,10 +119,8 @@ class WoowProjectAiController(http.Controller):
         call_log = assistant._create_call_log(channel, None, {'status': 'ok', 'http_status': 200, 'error': warnings,
                                                               'request': None, 'response': None},
                                               int((time.time() - started) * 1000), backend_type='push')
-        try:
-            with env.cr.savepoint():
-                env['woow.project.ai.usage.month']._add_for_channel(channel, assistant,
-                                                                     call_log.connection_id or None)
-        except Exception:  # noqa: BLE001 - usage must not undo the pushed message
-            _logger.exception("Project AI assistant %s: could not record the usage of a push", assistant.id)
+        # counted once the push is committed (a READ COMMITTED cursor: the request's snapshot would make the
+        # upsert fail when a reply of the same month was counted meanwhile)
+        env['woow.project.ai.usage.month']._add_for_channel_after_commit(channel, assistant,
+                                                                         call_log.connection_id or None)
         return _json_response({'ok': True, 'channel_id': channel.id, 'message_id': message.id})

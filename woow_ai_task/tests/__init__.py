@@ -17,4 +17,5 @@ from . import test_context
 from . import test_surface_usage
 from . import test_push
 from . import test_hardening
+from . import test_team_review
 from . import test_coexistence

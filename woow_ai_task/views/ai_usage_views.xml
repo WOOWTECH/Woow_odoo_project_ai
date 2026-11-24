@@ -8,14 +8,15 @@
                 <field name="month"/>
                 <field name="assistant_id"/>
                 <field name="connection_id" optional="show"/>
-                <field name="scope_name" string="Project"/>
+                <field name="project_id" optional="show"/>
+                <field name="scope_name" string="Scope" optional="hide"/>
                 <field name="surface_tab"/>
                 <field name="surface_type" optional="hide"/>
                 <field name="replies_ok" sum="Total"/>
                 <field name="replies_failed" sum="Total" optional="show"/>
                 <field name="prompt_tokens" sum="Total" optional="hide"/>
                 <field name="completion_tokens" sum="Total" optional="hide"/>
-                <field name="total_tokens" optional="show"/>
+                <field name="total_tokens" sum="Total" optional="show"/>
             </list>
         </field>
     </record>

@@ -293,7 +293,9 @@ class TestDispatchModel(ProjectAiCase):
                 'limit_time_real': 120, 'limit_time_real_cron': 900}
         self.connection.timeout_seconds = 300
         self.n8n_connection.timeout_seconds = 200
-        with patch.object(odoo_module, 'current_test', None), patch.dict(config.options, base):
+        # this module's dispatcher only (the coexistence database also has Discuss AI's: tested below)
+        with patch.object(odoo_module, 'current_test', None), patch.dict(config.options, base), \
+                patch.object(ai_job, '_active_dispatchers', return_value=1):
             info = Job._compute_job_runner()
             self.assertEqual((info['mode'], info['reason'], info['cron_runner']), ('cron', 'cron_runner', 'local'))
             self.assertEqual(info['max_timeout'], 300)
@@ -355,7 +357,9 @@ class TestDispatchModel(ProjectAiCase):
         self.connection.timeout_seconds = 300
         self.n8n_connection.timeout_seconds = 60
         settings = {'limit_time_real': 120, 'limit_time_real_cron': 400, 'stop_after_init': False}
-        with patch.object(odoo_module, 'current_test', None):
+        # this module's dispatcher only (with Discuss AI's too, 2 dispatchers on 2 threads: shared, tested below)
+        with patch.object(odoo_module, 'current_test', None), patch.object(ai_job, '_active_dispatchers',
+                                                                            return_value=1):
             with patch.dict(config.options, dict(settings, workers=0, max_cron_threads=2)):
                 cron_pod = Job._compute_job_runner()
                 self.report_state(dict(settings, workers=0, max_cron_threads=2))
@@ -371,7 +375,8 @@ class TestDispatchModel(ProjectAiCase):
             self.assertEqual((info['server'], info['cron_limit'], info['required']), ('threaded', 400, 360))
             self.assertFalse(info['shared'])
         # a cron pod whose limit is too short: the web pod falls back too, and says why
-        with patch.object(odoo_module, 'current_test', None):
+        with patch.object(odoo_module, 'current_test', None), patch.object(ai_job, '_active_dispatchers',
+                                                                            return_value=1):
             self.report_state(dict(settings, workers=0, max_cron_threads=2, limit_time_real_cron=300))
             with patch.dict(config.options, dict(settings, workers=2, max_cron_threads=0)):
                 info = Job._compute_job_runner()
@@ -651,7 +656,7 @@ class TestDispatchModel(ProjectAiCase):
         no_ping = {'pid': None, 'at': None, 'probe': False}
         with patch.dict(config.options, dict(db_one, workers=2, limit_time_real=120, limit_time_real_cron=900)), \
                 patch.object(ai_job, '_pool_free_connections', return_value=60), \
-                patch.dict(ai_job._watchdog_ping, no_ping):
+                patch.dict(ai_job._watchdog_ping, no_ping), patch.object(ai_job, '_active_dispatchers', return_value=1):
             s = Job._dispatch_settings(info)
             self.assertEqual((s['shared'], s['idle_wait']), (False, ai_job.DISPATCH_IDLE_WAIT_SECONDS))
             # prefork: 900 - 70 (idle sleep) - 300 - 60
@@ -684,6 +689,7 @@ class TestDispatchModel(ProjectAiCase):
         # threaded cron thread: what the pass already used counts
         with patch.dict(config.options, dict(db_one, workers=0, limit_time_real=120, limit_time_real_cron=1800)), \
                 patch.object(ai_job, '_pool_free_connections', return_value=6), \
+                patch.object(ai_job, '_active_dispatchers', return_value=1), \
                 patch.object(thread, 'type', 'cron', create=True), \
                 patch.object(thread, 'start_time', time.time() - 100, create=True):
             s = Job._dispatch_settings(info)
@@ -716,6 +722,55 @@ class TestDispatchModel(ProjectAiCase):
         self.assertIn(kwargs['idle_wait'], (ai_job.DISPATCH_IDLE_WAIT_SECONDS, ai_job.SHARED_IDLE_WAIT_SECONDS))
         self.assertEqual(len(self.dispatcher_triggers() - before), 1)  # budget reached: next pass now
         self.assertTrue(ai_job._remote_runner_view(self.env.cr))  # the cron process reported itself
+
+    # --- next to Discuss AI's dispatcher (team review 28, 35, 36) ---
+
+    def test_ai_dispatchers_share_the_cron_threads(self):
+        Job = self.Job
+        info = dict(CRON_INFO, max_timeout=300)
+        options = {'db_name': self.env.cr.dbname, 'max_cron_threads': 2, 'workers': 2, 'limit_time_real': 120,
+                   'limit_time_real_cron': 0}
+        self.assertEqual(ai_job._active_dispatchers(self.env.cr),
+                         2 if 'woow.ai.job' in self.env else 1, 'this module\'s, and Discuss AI\'s when installed')
+        with patch.dict(config.options, options), patch.object(ai_job, '_pool_free_connections', return_value=60):
+            with patch.object(ai_job, '_active_dispatchers', return_value=1):
+                settings = Job._dispatch_settings(info)
+                self.assertEqual((settings['shared'], settings['budget']), (False, ai_job.MAX_DISPATCH_SECONDS))
+            # as many AI dispatchers as cron threads: short passes, so that the other crons get a turn
+            with patch.object(ai_job, '_active_dispatchers', return_value=2):
+                settings = Job._dispatch_settings(info)
+                self.assertEqual((settings['shared'], settings['budget'], settings['idle_wait']),
+                                 (True, ai_job.SHARED_DISPATCH_SECONDS, ai_job.SHARED_IDLE_WAIT_SECONDS))
+
+    def test_single_cron_thread_counts_the_other_dispatcher(self):
+        Job = self.Job
+        self.connection.timeout_seconds = 300
+        self.n8n_connection.timeout_seconds = 200
+        base = {'workers': 2, 'max_cron_threads': 1, 'stop_after_init': False, 'limit_time_real': 120,
+                'limit_time_real_cron': 800}
+        with patch.object(odoo_module, 'current_test', None), patch.dict(config.options, base):
+            with patch.object(ai_job, '_active_dispatchers', return_value=1):
+                self.assertEqual(Job._compute_job_runner()['required'], 300 + 60 + 70)
+            with patch.object(ai_job, '_active_dispatchers', return_value=2):
+                info = Job._compute_job_runner()
+                # Discuss AI's pass first in the same cron worker: its window, a reply, the margin
+                self.assertEqual(info['required'], 300 + 60 + 70 + ai_job.SHARED_DISPATCH_SECONDS + 300 + 60)
+                self.assertEqual((info['mode'], info['reason']), ('thread', 'cron_limit_too_low'))
+                with patch.dict(config.options, {'limit_time_real_cron': 1800}):
+                    self.assertEqual(Job._compute_job_runner()['mode'], 'cron')
+
+    def test_no_pass_without_room_for_one_reply(self):
+        before = self.dispatcher_triggers()
+        options = {'workers': 2, 'limit_time_real': 120, 'limit_time_real_cron': 400}
+        no_ping = {'pid': None, 'at': None, 'probe': False}
+        with self.runner(dict(CRON_INFO, max_timeout=300)), patch.object(ai_job, 'Dispatcher') as dispatcher, \
+                patch.dict(config.options, options), patch.dict(ai_job._watchdog_ping, no_ping):
+            # 400 s of cron time, about 70 s already used: less than a reply (300 s) and the margin
+            self.assertEqual(self.Job.with_context(cron_id=1)._cron_run_jobs(), 0)
+        dispatcher.assert_not_called()
+        trigger = self.dispatcher_triggers() - before
+        self.assertEqual(len(trigger), 1, 'run again soon, in a fresh pass')
+        self.assertGreater(trigger.call_at, fields.Datetime.now())
 
     def test_thread_mode_cron_recovers(self):
         with self.runner(THREAD_INFO), patch.object(type(self.Job), '_cron_recover_jobs', return_value=3) as rec, \

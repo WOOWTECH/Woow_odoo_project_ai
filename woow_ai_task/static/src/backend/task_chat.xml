@@ -8,9 +8,6 @@
                 <Thread thread="state.thread" t-key="state.thread.localId" jumpPresent="state.jumpPresent"
                         messageActions="!state.readonly"
                         messageEdition="messageEdition" messageToReplyTo="messageToReplyTo"/>
-                <div t-if="state.thread.hasOtherMembersTyping" class="o_woow_project_ai_task_chat_typing px-3">
-                    <Typing channel="state.thread" t-key="state.thread.localId" size="'medium'"/>
-                </div>
                 <div t-if="state.readonly" class="alert alert-info m-3 mb-2" role="status">
                     This task is archived: its AI chats can only be read.
                 </div>
@@ -23,7 +20,6 @@
                     <!-- one composer per conversation: the form pager moves this widget to another task -->
                     <Composer composer="state.thread.composer" t-key="state.thread.localId"
                               autofocus="state.autofocus"
-                              placeholder="props.tab === 'customer' ? customerPlaceholder : undefined"
                               messageEdition="messageEdition" messageToReplyTo="messageToReplyTo"
                               onPostCallback.bind="onPosted" dropzoneRef="contentRef"/>
                 </t>

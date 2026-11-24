@@ -11,14 +11,17 @@ def uninstall_hook(env):
     conversations in line with the task access (no sync, no post check, no
     read rule), so their people are removed (the AI assistants' bots stay) and
     they are archived: history kept, readable by system administrators only.
-    The bot partners stay archived (they author the old AI messages). The cron
-    runner report (a system parameter written with SQL, no xmlid) is removed."""
+    The bot partners stay archived (they author the old AI messages). The
+    system parameters the code writes (the cron runner report, the sweep's
+    cursor: no xmlid) are removed."""
     # first, the global discuss.channel rule: it reads a field of this module, so it must never outlive its
     # code (Odoo's uninstall deletes the module's records, the rule included, before its fields anyway)
     rule = env.ref('woow_ai_task.rule_discuss_channel_woow_project_ai', raise_if_not_found=False)
     if rule:
         rule.sudo().active = False
-    env.cr.execute("DELETE FROM ir_config_parameter WHERE key = %s", ('woow_ai_task.dispatcher_state',))
+    # system parameters written by the code (no xmlid): the cron runner report and the sweep's cursor
+    env.cr.execute("DELETE FROM ir_config_parameter WHERE key IN %s",
+                   (('woow_ai_task.dispatcher_state', 'woow_ai_task.sweep_cursor'),))
     Channel = env['discuss.channel'].sudo().with_context(active_test=False)
     channels = Channel.search([('woow_project_ai_task_id', '!=', False)])
     bots = Channel._woow_project_ai_bot_partner_ids()

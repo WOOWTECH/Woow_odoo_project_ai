@@ -9,15 +9,19 @@
                 <page string="AI Assistants" name="woow_project_ai_assistants" groups="project.group_project_user">
                     <div class="alert alert-info" role="status">
                         With an internal AI assistant, every task of this project gets an "Internal AI chat"
-                        (colleagues with Project rights who can read the task); with a customer AI assistant, a
-                        "Customer AI chat" (portal users who can read the task, also on the portal task page). The AI
-                        answers every message of the chat's own people. System administrators prepare the AI
-                        assistants and their AI connections (Project > Configuration > Project AI).
+                        (colleagues with Project rights who can read the task); with a customer AI assistant and a
+                        project shared with portal users, a "Customer AI chat" (portal users who can read the task,
+                        also on the portal task page). The internal AI answers every message of the colleagues; the
+                        customer AI answers the customers and pauses after a colleague writes. System administrators
+                        prepare the AI assistants and their AI connections (Project > Configuration > Project AI).
                     </div>
                     <group>
                         <group string="Internal AI Chat" name="woow_project_ai_internal">
                             <field name="woow_project_ai_internal_assistant_id"
                                    options="{'no_create': True, 'no_open': True}"/>
+                            <field name="woow_project_ai_internal_assistant_description" readonly="1" nolabel="1"
+                                   colspan="2" class="text-muted"
+                                   invisible="not woow_project_ai_internal_assistant_description"/>
                             <field name="woow_project_ai_internal_state" readonly="1"/>
                             <field name="woow_project_ai_internal_state_reason" readonly="1" nolabel="1" colspan="2"/>
                             <field name="woow_project_ai_usage_internal_month"/>
@@ -25,6 +29,9 @@
                         <group string="Customer AI Chat" name="woow_project_ai_customer">
                             <field name="woow_project_ai_customer_assistant_id"
                                    options="{'no_create': True, 'no_open': True}"/>
+                            <field name="woow_project_ai_customer_assistant_description" readonly="1" nolabel="1"
+                                   colspan="2" class="text-muted"
+                                   invisible="not woow_project_ai_customer_assistant_description"/>
                             <field name="woow_project_ai_customer_state" readonly="1"/>
                             <field name="woow_project_ai_customer_state_reason" readonly="1" nolabel="1" colspan="2"/>
                             <field name="woow_project_ai_usage_customer_month"/>

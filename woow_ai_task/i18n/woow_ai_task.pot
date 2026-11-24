@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 07:08+0000\n"
-"PO-Revision-Date: 2026-11-24 07:08+0000\n"
+"POT-Creation-Date: 2026-11-24 09:55+0000\n"
+"PO-Revision-Date: 2026-11-24 09:55+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -75,8 +75,33 @@ msgid ""
 msgstr ""
 
 #. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid ""
+"A customer wrote in the customer AI chat of this task, but the AI could not "
+"answer (the AI backend failed or did not answer in time; the customer got "
+"the error message). Please answer the customer."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/mail_message.py:0
+msgid ""
+"A message of a task AI conversation can only be answered in that "
+"conversation."
+msgstr ""
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "A new push key replaces the current one. Continue?"
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_project.py:0
+msgid ""
+"A project manager can share the project with portal users (Visibility, "
+"Settings page)."
 msgstr ""
 
 #. module: woow_ai_task
@@ -191,6 +216,16 @@ msgid "API Key Configured"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_project_project__woow_project_ai_customer_assistant_description
+msgid "About the Customer AI Assistant"
+msgstr ""
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_project_project__woow_project_ai_internal_assistant_description
+msgid "About the Internal AI Assistant"
+msgstr ""
+
+#. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_res_groups
 msgid "Access Groups"
 msgstr ""
@@ -219,9 +254,10 @@ msgstr ""
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_internal_assistant_id
 msgid ""
-"Answers the \"Internal AI chat\" of every task of this project (employees "
-"who can read the task). Its backend may look up company data, read only: a "
-"property of its AI connection, set up by a system administrator."
+"Answers the \"Internal AI chat\" of every task of this project (colleagues "
+"with Project rights who can read the task). Its backend may look up company "
+"data, read only: a property of its AI connection, set up by a system "
+"administrator."
 msgstr ""
 
 #. module: woow_ai_task
@@ -253,6 +289,11 @@ msgstr ""
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_list
 msgid "Assistants"
+msgstr ""
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_ir_attachment
+msgid "Attachment"
 msgstr ""
 
 #. module: woow_ai_task
@@ -318,6 +359,11 @@ msgstr ""
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_project_collaborator
 msgid "Collaborators in project shared"
+msgstr ""
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_bus_bus
+msgid "Communication Bus"
 msgstr ""
 
 #. module: woow_ai_task
@@ -480,6 +526,12 @@ msgstr ""
 msgid ""
 "Debugging only: store the request and response content in the call logs. "
 "They contain private conversations. Turning it off erases stored content."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ai_usage.py:0
+msgid "Deleted project (#%(id)s)"
 msgstr ""
 
 #. module: woow_ai_task
@@ -749,6 +801,13 @@ msgid ""
 msgstr ""
 
 #. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/discuss_channel.py:0
+msgid ""
+"In a task AI conversation you can only add files you uploaded yourself."
+msgstr ""
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Internal"
 msgstr ""
@@ -962,7 +1021,7 @@ msgstr ""
 
 #. module: woow_ai_task
 #. odoo-javascript
-#: code:addons/woow_ai_task/static/src/backend/task_chat.js:0
+#: code:addons/woow_ai_task/static/src/common/thread_model_patch.js:0
 msgid "Message to the customer: the AI pauses after you write…"
 msgstr ""
 
@@ -1055,7 +1114,7 @@ msgstr ""
 #: model:ir.model.fields,help:woow_ai_task.field_discuss_channel__woow_project_ai_readable
 msgid ""
 "Not a task AI chat, or the current user can read its task now (internal "
-"chats: employees only)."
+"chats: employees with Project rights)."
 msgstr ""
 
 #. module: woow_ai_task
@@ -1108,6 +1167,14 @@ msgstr ""
 msgid ""
 "Only the name and the description of a task AI conversation can be changed: "
 "its task manages the rest."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ir_attachment.py:0
+msgid ""
+"Only the person who uploaded a file of a task AI conversation can change or "
+"delete it."
 msgstr ""
 
 #. module: woow_ai_task
@@ -1190,7 +1257,6 @@ msgstr ""
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_project_project
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__project_id
-#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_list
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_search
 msgid "Project"
 msgstr ""
@@ -1370,7 +1436,15 @@ msgstr ""
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_project.py:0
-msgid "Ready: the AI answers every message."
+msgid ""
+"Ready: the AI answers every customer message; a colleague's message pauses "
+"it."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_project.py:0
+msgid "Ready: the AI answers every message of the colleagues."
 msgstr ""
 
 #. module: woow_ai_task
@@ -1382,6 +1456,11 @@ msgstr ""
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "Reason given by the AI: %(reason)s"
+msgstr ""
+
+#. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_open_expired
+msgid "Reload the task page"
 msgstr ""
 
 #. module: woow_ai_task
@@ -1542,6 +1621,7 @@ msgstr ""
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__scope_name
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_list
 msgid "Scope"
 msgstr ""
 
@@ -1571,7 +1651,10 @@ msgstr ""
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_internal_brief
-msgid "Sent to the internal AI with every question, after its own prompt."
+msgid ""
+"Sent to the internal AI with every question, after its own prompt, while the"
+" colleague who asks and every colleague of that chat can read this project "
+"(a task follower may read a task of a project hidden to them)."
 msgstr ""
 
 #. module: woow_ai_task
@@ -1609,6 +1692,8 @@ msgid "Shown to project managers when they choose the AI assistants"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_customer_assistant_description
+#: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_internal_assistant_description
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_assistant__description
 msgid ""
 "Shown to project managers when they choose the AI assistants of a project."
@@ -1822,6 +1907,13 @@ msgid ""
 msgstr ""
 
 #. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_my_task_woow_project_ai
+msgid ""
+"The customers of this task read this chat. A message of yours goes to them and pauses the AI for\n"
+"                    a while; the AI does not answer colleagues here."
+msgstr ""
+
+#. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid ""
@@ -1919,6 +2011,19 @@ msgid "This field can only be searched as equal to True or False."
 msgstr ""
 
 #. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_open_expired
+msgid "This page is out of date. Please reload the task page."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_project.py:0
+msgid ""
+"This project is not shared with portal users: no customer can open a "
+"customer AI chat."
+msgstr ""
+
+#. module: woow_ai_task
 #. odoo-javascript
 #: code:addons/woow_ai_task/static/src/backend/task_chat.xml:0
 msgid "This task is archived: its AI chats can only be read."
@@ -1927,6 +2032,7 @@ msgstr ""
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
+#: code:addons/woow_ai_task/models/mail_message.py:0
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "This task is archived: its AI conversations can only be read."
 msgstr ""
@@ -2066,10 +2172,11 @@ msgstr ""
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
 msgid ""
 "With an internal AI assistant, every task of this project gets an \"Internal AI chat\"\n"
-"                        (colleagues with Project rights who can read the task); with a customer AI assistant, a\n"
-"                        \"Customer AI chat\" (portal users who can read the task, also on the portal task page). The AI\n"
-"                        answers every message of the chat's own people. System administrators prepare the AI\n"
-"                        assistants and their AI connections (Project &gt; Configuration &gt; Project AI)."
+"                        (colleagues with Project rights who can read the task); with a customer AI assistant and a\n"
+"                        project shared with portal users, a \"Customer AI chat\" (portal users who can read the task,\n"
+"                        also on the portal task page). The internal AI answers every message of the colleagues; the\n"
+"                        customer AI answers the customers and pauses after a colleague writes. System administrators\n"
+"                        prepare the AI assistants and their AI connections (Project &gt; Configuration &gt; Project AI)."
 msgstr ""
 
 #. module: woow_ai_task

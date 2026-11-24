@@ -30,9 +30,10 @@ from .ai_assistant_backend import strip_think
 _logger = logging.getLogger(__name__)
 
 MAX_FILES_PER_REPLY = 10
-# one reply, all its files together: the downloads end in time (inside the
-# job's margin for downloads and posting, ai_job.WORKER_LIMIT_MARGIN_SECONDS)
-# and stay bounded in memory, whatever the per-file limit
+# one backend answer (all its replies, up to ai_assistant_backend.MAX_REPLIES),
+# all its files together: the downloads end in time (inside the job's margin
+# for downloads and posting, ai_job.WORKER_LIMIT_MARGIN_SECONDS) and stay
+# bounded in memory, whatever the per-file limit
 REPLY_DOWNLOAD_SECONDS = 45
 MAX_REPLY_BYTES = 100 * 1024 * 1024
 
@@ -65,7 +66,7 @@ class WoowProjectAiAssistantReply(models.Model):
 
     @staticmethod
     def _reply_budget():
-        """What all the files of one reply may take together: {'deadline', 'bytes'}."""
+        """What all the files of one backend answer may take together: {'deadline', 'bytes'}."""
         return {'deadline': time.monotonic() + REPLY_DOWNLOAD_SECONDS, 'bytes': MAX_REPLY_BYTES}
 
     @staticmethod
@@ -112,7 +113,7 @@ class WoowProjectAiAssistantReply(models.Model):
         }
         return notes[source]
 
-    def _prepare_reply(self, reply, channel=None, message=None):
+    def _prepare_reply(self, reply, channel=None, message=None, budget=None):
         """{'text', 'attachments'} from a backend -> {'html': Markup, 'files': [...], 'warnings': [...]}
 
         Args:
@@ -121,6 +122,8 @@ class WoowProjectAiAssistantReply(models.Model):
                 note language); None for the default rules
             message (mail.message): the message being answered (the language
                 of the notes is its author's)
+            budget (dict): what the files may take (_reply_budget), shared by
+                every reply of one backend answer; a new one when omitted
         """
         self.ensure_one()
         text = strip_think(reply.get('text') or '')
@@ -128,7 +131,8 @@ class WoowProjectAiAssistantReply(models.Model):
         warnings = []
         domains = self._download_domains()
         max_bytes = self._max_download_bytes()
-        budget = self._reply_budget()
+        if budget is None:
+            budget = self._reply_budget()
 
         def replace_data_uri(match):
             declared = (match.group('type') or match.group('type2') or '').lower()
@@ -171,6 +175,10 @@ class WoowProjectAiAssistantReply(models.Model):
             except media.DownloadRefused as e:
                 _logger.info("Project AI assistant %s: file not attached (%s)", self.id, e)
                 return match.group(0)
+            except Exception:  # noqa: BLE001 - a file never costs the reply: it stays a link
+                _logger.warning("Project AI assistant %s: file not attached (unexpected error)", self.id,
+                                exc_info=True)
+                return match.group(0)
             files.append(file)
             return file['name']
 
@@ -198,13 +206,24 @@ class WoowProjectAiAssistantReply(models.Model):
                     if not media.url_allowed(url, domains):
                         raise media.DownloadRefused('domain not allowed')
                     files.append(self._fetch_file(url, name=name, budget=budget))
-                except media.DownloadRefused as e:
-                    _logger.info("Project AI assistant %s: attachment kept as a link (%s)", self.id, e)
+                except Exception as e:  # noqa: BLE001 - DownloadRefused, or anything else: the file stays a link
+                    if isinstance(e, media.DownloadRefused):
+                        _logger.info("Project AI assistant %s: attachment kept as a link (%s)", self.id, e)
+                    else:
+                        _logger.warning("Project AI assistant %s: attachment kept as a link (unexpected error)",
+                                        self.id, exc_info=True)
                     extra_links.append('[%s](%s)' % ((name or media.filename_from_url(url)).replace(']', ''), url))
         if extra_links:
             text = (text + '\n\n' + '\n'.join('- %s' % link for link in extra_links)).strip()
         link_hosts = channel._woow_project_ai_link_hosts(self) if channel else None
-        return {'html': markdown_to_html(text, link_hosts=link_hosts), 'files': files, 'warnings': warnings}
+        try:
+            html = markdown_to_html(text, link_hosts=link_hosts)
+        except Exception:  # noqa: BLE001 - the renderer never loses a reply: escaped plain text
+            _logger.warning("Project AI assistant %s: reply shown as plain text (Markdown rendering failed)",
+                            self.id, exc_info=True)
+            html = Markup('<p>%s</p>') % text
+            warnings.append('reply shown as plain text')
+        return {'html': html, 'files': files, 'warnings': warnings}
 
     def _post_prepared(self, channel, prepared):
         """Post a prepared reply in `channel` as the AI; returns the message (or empty)."""

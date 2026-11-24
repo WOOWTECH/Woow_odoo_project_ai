@@ -7,8 +7,9 @@ import json
 import socket
 import threading
 import time
+from contextlib import nullcontext
 from datetime import timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
@@ -20,7 +21,7 @@ BACKEND_POST = 'odoo.addons.woow_ai_task.models.ai_assistant_backend.requests.po
 BACKEND_GET = 'odoo.addons.woow_ai_task.models.ai_assistant_backend.requests.get'
 CONNECTION_GET = 'odoo.addons.woow_ai_task.models.ai_connection.requests.get'
 CONNECTION_POST = 'odoo.addons.woow_ai_task.models.ai_connection.requests.post'
-MEDIA_GET = 'odoo.addons.woow_ai_task.tools.media.requests.get'
+MEDIA_GET = 'odoo.addons.woow_ai_task.tools.media._http_get'
 BACKEND_SLEEP = 'odoo.addons.woow_ai_task.models.ai_assistant_backend.time.sleep'
 
 TEST_KEY = 'test-backend-key'  # placeholder, not a real key
@@ -200,6 +201,30 @@ def slow_sse_handler(seconds, interval=0.2):
             conn.sendall(b': keepalive\n\n')
             time.sleep(interval)
     return handler
+
+
+def run_after_commit_usage(test, request):
+    """Run `request()` (an HTTP call) and then what its commit would run for
+    the usage (``woow.project.ai.usage.month._add_for_channel_after_commit``):
+    test cursors drop post-commit hooks; the count's own READ COMMITTED cursor
+    is the test cursor here."""
+    from odoo.addons.woow_ai_task.models import ai_job  # noqa: PLC0415
+    Callbacks = type(test.env.cr.postcommit)
+    added = []
+    original = Callbacks.add
+
+    def capture(callbacks, func):
+        if getattr(func, 'woow_project_ai_usage', None):
+            added.append(func)
+        return original(callbacks, func)
+
+    with patch.object(Callbacks, 'add', capture):
+        result = request()
+    with patch.object(ai_job, '_job_cursor', lambda db_name: nullcontext(test.env.cr)):
+        for func in added:
+            func()
+    test.env['woow.project.ai.usage.month'].invalidate_model()
+    return result, added
 
 
 class AiTaskFixtures:

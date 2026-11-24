@@ -3,6 +3,7 @@ import re
 
 from odoo.tests.common import BaseCase, tagged
 
+from odoo.addons.woow_ai_task.tools import markdown
 from odoo.addons.woow_ai_task.tools.markdown import markdown_to_html
 
 
@@ -93,3 +94,14 @@ class TestMarkdown(BaseCase):
         self.assertEqual(str(markdown_to_html('[s](https://shop.example.com)', link_hosts='shop.example.com'))
                          .count('<a '), 1)
         self.assertEqual(self.html('[e](https://evil.example.net)').count('<a '), 1)
+
+    def test_deep_nesting_is_flattened(self):
+        # team review 27: a thousand '>' (or a very deep list) must not exhaust the recursion limit
+        html = self.html('>' * 2000 + ' the deepest words')
+        self.assertIn('the deepest words', html)
+        self.assertLessEqual(html.count('<div class="border-start'), markdown.MAX_NESTING)
+        self.assertNotIn('&gt;&gt;', html, 'the markers of the flattened levels are removed')
+        deep_list = '\n'.join(' ' * (2 * level) + '- item %d' % level for level in range(250))
+        html = self.html(deep_list)
+        self.assertIn('item 249', html)
+        self.assertLessEqual(html.count('<ul>'), markdown.MAX_NESTING)

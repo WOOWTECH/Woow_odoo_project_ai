@@ -13,9 +13,13 @@
             <div t-if="woow_project_ai_customer_chat" id="woow_project_ai_chat" data-anchor="true"
                  class="o_woow_project_ai_portal mb-4" t-att-data-member="'1' if woow_project_ai_chat_member else '0'">
                 <h3>Customer AI Chat</h3>
-                <p class="text-muted small mb-2">
+                <p t-if="not woow_project_ai_chat_staff" class="text-muted small mb-2">
                     Ask our AI assistant about this task, at any time. Your messages and files are also visible to
                     our team and to the other people who can see this task.
+                </p>
+                <p t-else="" class="text-muted small mb-2">
+                    The customers of this task read this chat. A message of yours goes to them and pauses the AI for
+                    a while; the AI does not answer colleagues here.
                 </p>
                 <!-- a link: without JavaScript (or before it starts) it opens the full page in a new tab;
                      static/src/portal/task_ai_chat.js shows the conversation here instead -->
@@ -35,5 +39,17 @@
                 <hr/>
             </div>
         </xpath>
+    </template>
+
+    <!-- the embedded chat frame with an open token of an older page or session: reload the task page itself -->
+    <template id="portal_open_expired" name="Customer AI Chat: reload the task page">
+        <t t-call="web.frontend_layout">
+            <t t-set="no_header" t-value="True"/>
+            <t t-set="no_footer" t-value="True"/>
+            <div class="container py-4 text-center">
+                <p>This page is out of date. Please reload the task page.</p>
+                <a t-att-href="task_url" target="_top" class="btn btn-primary">Reload the task page</a>
+            </div>
+        </t>
     </template>
 </odoo>

@@ -75,7 +75,7 @@ from odoo.tools import config
 
 from ..tools.dispatcher import BUSY, FAILED, Dispatcher
 from .project_project import TAB_CUSTOMER
-from .project_task import ALERT_HANDOFF
+from .project_task import ALERT_FAILED, ALERT_HANDOFF
 
 _logger = logging.getLogger(__name__)
 
@@ -234,6 +234,24 @@ def _local_runner_view():
     threaded = not config.get('workers')
     return {'server': 'threaded' if threaded else 'prefork', 'cron_limit': _cron_limit(threaded),
             'cron_threads': int(config.get('max_cron_threads') or 0), 'dbs': _served_db_count()}
+
+
+# the AI reply dispatchers of one database, each a priority-1 cron that keeps
+# its cron worker for a whole pass: this module's and Discuss AI's
+# (woow_ai_contact, model woow.ai.job). With at least as many of them as cron
+# threads, each pass is short (as on a shared worker), so the other crons of
+# the database still get a turn between passes
+AI_DISPATCHER_MODELS = ('woow.project.ai.job', 'woow.ai.job')
+
+
+def _active_dispatchers(cr):
+    """Number of active AI reply dispatcher crons in this database."""
+    cr.execute("""
+        SELECT count(*) FROM ir_cron c
+          JOIN ir_act_server a ON a.id = c.ir_actions_server_id
+          JOIN ir_model m ON m.id = a.model_id
+         WHERE c.active AND m.model IN %s AND a.code LIKE %s""", (AI_DISPATCHER_MODELS, '%_cron_run_jobs%'))
+    return (cr.fetchone() or [0])[0] or 0
 
 
 def _report_runner_state(cr):
@@ -609,12 +627,17 @@ class WoowProjectAiJob(models.Model):
         limit = view['cron_limit']
         reserve = 0 if view['server'] == 'threaded' else PREFORK_PASS_RESERVE_SECONDS
         required = max_timeout + WORKER_LIMIT_MARGIN_SECONDS + reserve
+        dispatchers = _active_dispatchers(cr)
+        if view['cron_threads'] <= 1 and dispatchers > 1:
+            # one cron thread for both AI dispatchers (woow_ai_contact's runs in the same process_work): its
+            # pass (a shared window, a reply as long as ours, the margin) comes first
+            required += SHARED_DISPATCH_SECONDS + max_timeout + WORKER_LIMIT_MARGIN_SECONDS
         fits = not limit or limit >= required
         info = {'forced': forced != 'auto', 'server': view['server'],
                 'cron_limit': limit, 'required': required, 'max_timeout': max_timeout,
                 'cron_runner': 'local' if local else ('other process' if remote else 'none'),
-                'cron_threads': view['cron_threads'], 'dbs': view['dbs'],
-                'shared': view['cron_threads'] <= 1 or view['dbs'] > 1}
+                'cron_threads': view['cron_threads'], 'dbs': view['dbs'], 'dispatchers': dispatchers,
+                'shared': view['cron_threads'] <= 1 or view['dbs'] > 1 or dispatchers >= view['cron_threads']}
         if forced == 'thread':
             info.update(mode='thread', reason='forced_thread')
         elif forced == 'cron':
@@ -754,8 +777,10 @@ class WoowProjectAiJob(models.Model):
             return
         now = fields.Datetime.now()
         if self.create_date and self.create_date < now - timedelta(minutes=JOB_MAX_AGE_MINUTES):
-            self._finish('failed', 'not processed within %s minutes, given up' % JOB_MAX_AGE_MINUTES)
-            self._notify_failure('job too old', user_told=False)
+            # unless it no longer needs an answer, the person is told (and, customer chat, the colleagues)
+            if self._skip_reply(commit_step):
+                return
+            self._give_up('not processed within %s minutes, given up' % JOB_MAX_AGE_MINUTES)
             commit_step()
             return
         if self.run_count >= MAX_JOB_RUNS:
@@ -792,8 +817,10 @@ class WoowProjectAiJob(models.Model):
             # the customer chat hands the customer to a person on an n8n "handoff"
             handoff = not result['error'] and channel._woow_project_ai_review_answer(assistant, result)
             if not result['error'] and (not result['skip'] or handoff):
-                # downloads happen here: no row lock held, nothing written yet
-                prepared = [assistant._prepare_reply(reply, channel=channel, message=self.message_id)
+                # downloads happen here: no row lock held, nothing written yet; one budget for the files
+                # of the whole answer (up to MAX_REPLIES replies), inside WORKER_LIMIT_MARGIN_SECONDS
+                budget = assistant._reply_budget()
+                prepared = [assistant._prepare_reply(reply, channel=channel, message=self.message_id, budget=budget)
                             for reply in result['replies']]
         finally:
             if typing:
@@ -943,11 +970,20 @@ class WoowProjectAiJob(models.Model):
 
     def _give_up(self, error, call_log=None):
         """Final failure: the person gets the error message (counted as a
-        failed reply in the monthly usage)."""
+        failed reply in the monthly usage); in the customer chat the
+        colleagues get the To-Do (they are muted there)."""
         assistant = self.assistant_id.sudo()
-        message = assistant._post_text(self.channel_id.sudo(), self._error_text())
+        channel = self.channel_id.sudo()
+        message = assistant._post_text(channel, self._error_text())
         self._finish('failed', error, reply_message=message or None)
         self._record_usage(False, call_log)
+        if channel.woow_project_ai_tab == TAB_CUSTOMER and channel.woow_project_ai_task_id:
+            try:
+                with self.env.cr.savepoint():
+                    channel.woow_project_ai_task_id._woow_project_ai_alert_activity(ALERT_FAILED)
+            except Exception:  # noqa: BLE001 - the error message stays
+                _logger.exception("Task %s: could not schedule the To-Do of a failed customer answer",
+                                  channel.woow_project_ai_task_id.id)
         self._notify_failure(error, user_told=True)
 
     def _record_usage(self, ok, call_log=None):
@@ -1147,7 +1183,10 @@ class WoowProjectAiJob(models.Model):
         else:
             used = _prefork_pass_used()
         view = _local_runner_view()
-        shared = view['cron_threads'] <= 1 or view['dbs'] > 1
+        # as many AI dispatchers (this one, woow_ai_contact's) as cron threads: each pass short, so that
+        # the other crons of the database are not kept waiting for whole passes
+        shared = view['cron_threads'] <= 1 or view['dbs'] > 1 \
+            or _active_dispatchers(self.env.cr) >= view['cron_threads']
         window = SHARED_DISPATCH_SECONDS if shared else MAX_DISPATCH_SECONDS
         if limit:
             budget = limit - used - runner['max_timeout'] - WORKER_LIMIT_MARGIN_SECONDS
@@ -1200,6 +1239,16 @@ class WoowProjectAiJob(models.Model):
             return 0
         settings = self._dispatch_settings(runner)
         db_name = self.env.cr.dbname
+        if settings['cron_limit'] and \
+                settings['cron_limit'] - settings['used'] < runner['max_timeout'] + WORKER_LIMIT_MARGIN_SECONDS:
+            # what this cron pass already used (e.g. the other AI dispatcher ran first in this worker) leaves
+            # no room for one reply: the watchdog would cut it. Run again soon, in a fresh pass
+            cron = self.env.ref(DISPATCH_CRON_XMLID, raise_if_not_found=False)
+            if cron:
+                cron.sudo()._trigger(fields.Datetime.now() + timedelta(seconds=DISPATCH_BUSY_RETRY_SECONDS))
+            _logger.info("Project AI: no dispatcher pass now (%.0f s of the %s s cron limit used); retried soon",
+                         settings['used'], settings['cron_limit'])
+            return 0
         self._dispatch_release_cursor()
         slots = settings['concurrency']
         dispatcher = Dispatcher(

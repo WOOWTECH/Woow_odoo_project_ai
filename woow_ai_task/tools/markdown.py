@@ -34,6 +34,9 @@ from .media import host_allowed, parse_domains, url_host
 
 ALLOWED_SCHEMES = ('http://', 'https://', 'mailto:')
 MAX_INPUT_LENGTH = 100000  # characters; longer replies are cut (with a marker)
+# nesting of quotes and lists: deeper levels are rendered flat (their text), so
+# no reply can exhaust the recursion limit (a thousand '>' would)
+MAX_NESTING = 8
 
 _FENCE_RE = re.compile(r'^\s{0,3}(`{3,}|~{3,})\s*([\w+-]*)\s*$')
 _HEADING_RE = re.compile(r'^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
@@ -202,8 +205,9 @@ def _render_table(lines, i):
     return Markup('').join(out), i
 
 
-def _render_list(lines, i):
-    """Parse a (possibly nested) list starting at lines[i]; returns (Markup, next index)."""
+def _render_list(lines, i, depth=0):
+    """Parse a (possibly nested) list starting at lines[i]; returns (Markup, next index).
+    Below MAX_NESTING levels, deeper items are lines of their parent item."""
     first = _LIST_RE.match(lines[i])
     base_indent = len(first.group('indent').expandtabs(4))
     ordered = first.group('marker')[0].isdigit()
@@ -224,7 +228,11 @@ def _render_list(lines, i):
             if indent < base_indent:
                 break
             if indent >= base_indent + 2 and items:
-                child, i = _render_list(lines, i)
+                if depth + 1 >= MAX_NESTING:
+                    items[-1][0].append(match.group('text'))
+                    i += 1
+                    continue
+                child, i = _render_list(lines, i, depth + 1)
                 items[-1][1].append(child)
                 continue
             if match.group('marker')[0].isdigit() != ordered:
@@ -254,7 +262,7 @@ def _is_block_start(lines, i):
     )
 
 
-def _render_blocks(lines):
+def _render_blocks(lines, depth=0):
     out = []
     i = 0
     while i < len(lines):
@@ -289,7 +297,7 @@ def _render_blocks(lines):
             out.append(table)
             continue
         if _LIST_RE.match(line):
-            block, i = _render_list(lines, i)
+            block, i = _render_list(lines, i, depth)
             out.append(block)
             continue
         if _QUOTE_RE.match(line):
@@ -297,8 +305,14 @@ def _render_blocks(lines):
             while i < len(lines) and _QUOTE_RE.match(lines[i]):
                 quoted.append(_QUOTE_RE.match(lines[i]).group(1))
                 i += 1
+            if depth + 1 >= MAX_NESTING:
+                # deeper quotes: their text, every '>' marker removed
+                inner = [_strip_quote_markers(q) for q in quoted]
+                inner = Markup('<p>%s</p>') % Markup('<br/>').join(render_inline(q) for q in inner if q.strip())
+            else:
+                inner = _render_blocks(quoted, depth + 1)
             # not <blockquote>: Odoo tags it as a mail quote and Discuss folds it
-            out.append(Markup('<div class="border-start border-3 ps-2 text-muted">%s</div>') % _render_blocks(quoted))
+            out.append(Markup('<div class="border-start border-3 ps-2 text-muted">%s</div>') % inner)
             continue
         paragraph = [line.strip()]
         i += 1
@@ -307,6 +321,14 @@ def _render_blocks(lines):
             i += 1
         out.append(Markup('<p>%s</p>') % Markup('<br/>').join(render_inline(p) for p in paragraph))
     return Markup('').join(out)
+
+
+def _strip_quote_markers(line):
+    match = _QUOTE_RE.match(line)
+    while match:
+        line = match.group(1)
+        match = _QUOTE_RE.match(line)
+    return line
 
 
 def markdown_to_html(text, link_hosts=None):

@@ -1,10 +1,11 @@
 # Woow Odoo Project AI
 
-Odoo 18 addon for **project AI**: every task gets two AI conversations, an
-internal one for the colleagues who can read the task and a customer one for
-the portal users who can read it (also on the portal task page). The project
-picks one **AI assistant** per conversation; each assistant uses an
-**AI connection** to an n8n webhook or a LiteLLM (OpenAI-compatible) server.
+Odoo 18 addon for **project AI**: each task gets up to two AI conversations,
+one per AI assistant its project chose: an internal one for the colleagues
+with Project rights who can read the task, and a customer one for the portal
+users who can read it (also on the portal task page; in a project shared with
+portal users). Each assistant uses an **AI connection** to an n8n webhook or a
+LiteLLM (OpenAI-compatible) server.
 
 The module ships its own runtime core (connections, assistants, reply queue,
 call logs, monthly usage, push API). It depends on standard Odoo modules only
@@ -16,6 +17,8 @@ AI (`im_livechat_ai`) without sharing anything with them.
 | Module | Status | What it does |
 |---|---|---|
 | `woow_ai_task` | 18.0.1.0.0 | Project AI: internal and customer AI chats on every task |
+| `woow_ai_task_portal_discuss` | 18.0.1.0.0 | Bridge, installed automatically with `woow_odoo_portal_discuss`: task chats stay out of `/my/discussions`, its tabs and its card |
+| `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows |
 
 ## Features
 
@@ -29,39 +32,52 @@ AI (`im_livechat_ai`) without sharing anything with them.
   backend type changes.
 - **AI assistants** (system administrators): name, avatar, an archived bot
   partner (never offered in "Start a conversation", still posts in the task
-  chats), system prompt, error message, history length, push key.
+  chats), system prompt, error message, history length, push key; the
+  description is shown to project managers under each picker of the project's
+  "AI Assistants" page.
 - **Projects** (project managers): an internal and a customer AI assistant
   (the customer one must use a connection safe for customers), the project
   text of each tab, a welcome message for the customer chat, the pause after
   a colleague writes; readiness and this month's AI replies per tab.
-- **Two private conversations per task**, created when someone opens the tab:
+- **Up to two private conversations per task** (one per assistant the
+  project chose), created when someone opens the tab:
   - *Internal AI chat*: colleagues with Project rights who can read the task;
   - *Customer AI chat*: portal users who can read the task (also on the
-    portal task page); colleagues may read and write there and join muted.
+    portal task page), in a project shared with portal users; colleagues may
+    read and write there and join muted.
 - **Membership follows the task access**, by Odoo's own rules: only this
-  module adds members; synced on every access-relevant change and every hour;
-  a post by someone who lost the access is refused and they are removed at
-  once; every message (a person's, an AI reply, a push) first removes the
-  members who lost the access; until the sync, members who lost the access
-  read nothing (a global rule that changes nothing for any other channel). A tab's chat is found
-  through the chat's own link only, so no task write can point a tab at
-  another conversation.
+  module adds members; synced on every access-relevant change and by an
+  hourly sweep (it resumes where it stopped when a round outgrows the cron's
+  time limit); a post by someone who lost the access is refused and they are
+  removed at once; every message (a person's, an AI reply, a push) first
+  removes the members who lost the access. Until the sync, members who lost
+  the access read nothing (a global rule that changes nothing for any other
+  channel), and their open pages get no live message of the chat any more,
+  the message that removed them included (every bus poll leaves out the task
+  chats the polling user cannot read now). A tab's chat is found through the
+  chat's own link only, so no task write can point a tab at another
+  conversation.
 - **Every message is answered** (no @AI): a burst of one person gets one
   answer, two people asking at once each get theirs. A colleague's message
   in the customer chat pauses the AI and unmutes that colleague; an n8n
-  handoff pauses it and schedules one To-Do for the assignees; a customer
-  message the AI cannot answer schedules that To-Do too.
+  handoff pauses it and schedules a To-Do for the first assignee (else the
+  project manager); so does every customer message the AI cannot answer (the
+  tab is blocked, the backend failed, or the question waited too long: the
+  customer gets the error message). An open To-Do is reused; once it is
+  done, the next such message schedules a new one.
 - **What the AI gets**: the assistant's prompt, the project text of its tab
-  (the customer chat never gets the internal one) and a short task summary
-  read with the asker's own rights (customer chat: the portal-readable task
-  fields, without related tasks; internal chat: related records every member
-  can read); never the chatter. The customer chat takes no log note (its
-  customers read everything in it).
+  (the customer chat never gets the internal one; the internal one only
+  while the asker and every colleague of the chat can read the project) and
+  a short task summary read with the asker's own rights (customer chat: the
+  portal-readable task fields, without related tasks; internal chat: related
+  records every member can read); never the chatter. The customer chat takes
+  no log note (its customers read everything in it).
 - **Durable reply queue** in the cron process, typing indicator, files both
-  ways (images inline, documents as file parts or signed links), Markdown
-  replies, push API for n8n "skip, then push", call logs (30 days) and a
-  permanent monthly usage per project and tab (a reference for invoicing by
-  hand, no billing: limits live in the LiteLLM keys).
+  ways (images inline, documents as file parts or signed links; the files of
+  one answer: 45 seconds and 100 MB together, a failed download stays a
+  link), Markdown replies, push API for n8n "skip, then push", call logs
+  (30 days) and a permanent monthly usage per project and tab (a reference
+  for invoicing by hand, no billing: limits live in the LiteLLM keys).
 
 ## Install
 
@@ -77,6 +93,23 @@ Set `web.base.url` to the public address of Odoo (and
 built from it. Give the cron enough time: `limit_time_real_cron` at least the
 longest connection timeout + 60 s (+ 70 s with prefork workers); otherwise
 replies run in a thread of the web worker (the assistant form says so).
+
+### Cron workers next to Discuss AI
+
+Each AI module (this one and `woow_ai_contact`) has a priority-1 dispatcher
+cron that keeps one cron worker for its pass: up to its window, plus the
+longest connection timeout, plus 60 s.
+
+- Plan one cron thread per AI dispatcher plus one for every other cron:
+  `max_cron_threads` >= 3 with both modules on one database (woow_prod).
+- When the AI dispatchers are as many as the cron threads (for example
+  2 and 2), both use short passes (a 60 s window, a 5 s wait), so the other
+  crons (deploys, the e-mail queue) get a turn between passes.
+- With a single cron thread, `limit_time_real_cron` must cover both passes
+  (Discuss AI's runs first): otherwise this module's replies run in thread
+  mode. A pass that finds too little time left starts no reply and runs
+  again shortly.
+- A threaded cron process needs `db_maxconn` >= both modules' concurrency + 6.
 
 ## Once installed: keep the module in every image
 
@@ -108,12 +141,15 @@ the module's tables are missing can still be neutralized.
 
 ## Privacy and security
 
-- Task chats are private group conversations: only members read them, and
-  only while they can read the task now. Notifications (web push, mentions)
-  only reach people who can read the task. Odoo keeps an already open
-  websocket subscription until the client re-subscribes: a client that
-  ignores the leave notice keeps receiving the chat's live messages until it
-  reconnects.
+- Task chats are private group conversations: members read them, only while
+  they can read the task now; so do system administrators who can read the
+  task (Odoo's administrator rule on channels), without being listed as
+  members. Notifications (web push, mentions) only reach people who can read
+  the task. Odoo keeps a websocket's channels from its last subscribe and its
+  client does not re-subscribe when a member is removed, so every bus poll
+  leaves out the task chats the polling user cannot read now: a removed
+  member's open page (or script) gets no live message of the chat, not even
+  the one whose post removed them.
 - Connections (URLs, keys) and prompts are for system administrators only;
   keys are never readable and never sent to a browser; push keys are stored
   hashed. Project managers read assistant names only.
@@ -121,7 +157,13 @@ the module's tables are missing can still be neutralized.
   the customer chat gets only portal-readable task fields.
 - Backend replies are untrusted: HTML is escaped, links are limited to
   http/https/mailto, files are downloaded only from allowlisted hosts with a
-  size limit, and their type is detected from the content.
+  size and time limit (a host that trickles its bytes is cut at the
+  deadline), and their type is detected from the content.
+- Files and messages of a task chat: nobody adds someone else's file to a
+  message (Odoo lets employees link any file id), changes or deletes another
+  person's file, gives a message anywhere a task chat message as its parent
+  (Odoo shows a reply's parent with sudo), or creates a task chat message
+  other than by posting it.
 - Call logs hold status and timing only, unless *Log Request Content* is on
   for a connection (turning it off erases the stored content).
 

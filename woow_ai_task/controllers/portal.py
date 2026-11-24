@@ -58,6 +58,8 @@ class WoowProjectAiPortal(ProjectCustomerPortal):
         url = '/my/tasks/%s/woow_project_ai?token=%s' % (task_sudo.id, self._woow_project_ai_open_token(task_sudo.id))
         return {
             'woow_project_ai_customer_chat': True,
+            # a colleague on the portal page: the copy says the customers read the chat (and the AI pauses)
+            'woow_project_ai_chat_staff': user._is_internal(),
             'woow_project_ai_chat_url': url,
             # never loaded with the page (its composer would take the focus and scroll the page): on demand,
             # or at once for a member who came through the section's anchor (static/src/portal)
@@ -84,7 +86,12 @@ class WoowProjectAiPortal(ProjectCustomerPortal):
                 or not task._woow_project_ai_user_allowed(user, TAB_CUSTOMER):
             raise NotFound()
         if not consteq(str(token or ''), self._woow_project_ai_open_token(task.id)):
-            return request.redirect('/my/tasks/%s#woow_project_ai_chat' % task.id)
+            task_url = '/my/tasks/%s#woow_project_ai_chat' % task.id
+            if full:
+                return request.redirect(task_url)
+            # the embedded frame (an older page, or another session): a short page that reloads the task
+            # page itself, never the whole portal page inside the frame
+            return request.render('woow_ai_task.portal_open_expired', {'task_url': task_url})
         try:
             channel = task._woow_project_ai_open_tab_for(user, TAB_CUSTOMER)
         except (AccessError, UserError):

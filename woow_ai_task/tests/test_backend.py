@@ -490,8 +490,10 @@ class TestJobHooks(ProjectAiCase):
         with patch.object(Job, '_notify_failure', autospec=True) as notify, patch(BACKEND_POST) as post:
             run(old)
         post.assert_not_called()
-        self.assertEqual(notify.call_args.kwargs.get('user_told'), False)
-        self.assertFalse(old.reply_message_id)
+        # (team review 9) a question that waited too long is told so, as a failed one
+        self.assertEqual(notify.call_args.kwargs.get('user_told'), True)
+        self.assertTrue(old.reply_message_id)
+        self.assertEqual(old.state, 'failed')
 
 
 @tagged('post_install', '-at_install', 'woow_ai_task')

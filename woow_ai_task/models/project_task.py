@@ -44,6 +44,7 @@ CHANNEL_FIELDS = {'woow_project_ai_internal_channel_id', 'woow_project_ai_custom
 # what the To-Do of a task says (one open at a time)
 ALERT_HANDOFF = 'handoff'
 ALERT_BLOCKED = 'blocked'
+ALERT_FAILED = 'failed'
 
 
 class ProjectTask(models.Model):
@@ -66,13 +67,16 @@ class ProjectTask(models.Model):
              'or the AI could not answer a customer): at most one at a time.')
 
     @api.depends('project_id', 'project_id.woow_project_ai_internal_assistant_id',
-                 'project_id.woow_project_ai_customer_assistant_id')
+                 'project_id.woow_project_ai_customer_assistant_id', 'project_id.privacy_visibility')
     def _compute_woow_project_ai_available(self):
-        # sudo: project.project - only whether the project chose an assistant for the tab
+        # sudo: project.project - only whether the project chose an assistant for the tab. The saved project:
+        # a project changed in the form but not saved yet does not decide (its tab would refuse to open); the
+        # customer tab only in a project shared with portal users (else no customer can ever join)
         for task in self:
-            project = task.sudo().project_id
+            project = (task._origin or task).sudo().project_id
             task.woow_project_ai_internal_available = bool(project.woow_project_ai_internal_assistant_id)
-            task.woow_project_ai_customer_available = bool(project.woow_project_ai_customer_assistant_id)
+            task.woow_project_ai_customer_available = bool(project.woow_project_ai_customer_assistant_id) \
+                and project.privacy_visibility == 'portal'
 
     def _compute_woow_project_ai_channels(self):
         # through the chats' own link only (sudo: whether a chat exists is not sensitive; reading it is the
@@ -348,9 +352,12 @@ class ProjectTask(models.Model):
 
     def _woow_project_ai_alert_activity(self, kind, reason=None, minutes=0):
         """The customer AI chat needs a person: the customer asked for one
-        (``kind`` handoff) or the AI cannot answer a customer (``blocked``).
-        One To-Do for the first assignee (else the project manager), unless
-        one is still open on this task (it is reused, never doubled)."""
+        (``kind`` handoff), the AI cannot answer a customer (``blocked``) or
+        could not (``failed``: the backend failed, or the question waited too
+        long). Called for every such customer message: one To-Do for the
+        first assignee (else the project manager), unless one is still open on
+        this task (it is reused, never doubled; once done, the next message
+        schedules a new one)."""
         self.ensure_one()
         task = self.sudo()
         current = task.woow_project_ai_alert_activity_id.with_context(active_test=False).exists()
@@ -369,6 +376,11 @@ class ProjectTask(models.Model):
                          '%(minutes)s minutes.', minutes=minutes)
             if reason:
                 note += ' ' + env._('Reason given by the AI: %(reason)s', reason=reason)
+        elif kind == ALERT_FAILED:
+            summary = env._('Customer waits for an answer')
+            note = env._('A customer wrote in the customer AI chat of this task, but the AI could not answer (the AI '
+                         'backend failed or did not answer in time; the customer got the error message). Please '
+                         'answer the customer.')
         else:
             summary = env._('Customer waits for an answer')
             note = env._('A customer wrote in the customer AI chat of this task, but the AI cannot answer now (see '

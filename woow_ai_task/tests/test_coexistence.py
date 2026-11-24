@@ -116,6 +116,40 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
         if installed(self.env, 'woow_ai_contact_portal_discuss'):
             self.assertEqual(self.url_open('/my/discussions?filterby=ai').status_code, 200)
 
+    def test_notification_centre_counts_what_the_list_shows(self):
+        # team review 3 / 38: the centre's "unread conversations" (the /my card and the /my/notifications
+        # notice, both linking to /my/discussions) leaves out the task chats the list leaves out
+        if not installed(self.env, 'woow_ai_task_portal_notification'):
+            self.skipTest('the portal notification centre is not installed')
+        customer_chat = self.open_tab(self.customer, 'customer')
+        self.open_tab(self.staff, 'customer')
+        self.post(customer_chat, self.staff, 'a colleague answers in the task chat')
+        group = self.env['discuss.channel'].with_user(self.staff).create({'name': 'Kitchen planning group',
+                                                                         'channel_type': 'group'})
+        group.with_user(self.staff).add_members(partner_ids=self.customer.partner_id.ids)
+        group.with_user(self.staff).message_post(body='hello customer', message_type='comment',
+                                                 subtype_xmlid='mail.mt_comment')
+        member = customer_chat.sudo().channel_member_ids.filtered(lambda m: m.partner_id == self.customer.partner_id)
+        self.assertGreater(member.message_unread_counter, 0, 'the task chat has unread messages')
+        self.authenticate('aitask_customer', 'aitask_customer')
+        counters = self.make_jsonrpc_request('/my/counters', {
+            'counters': ['wpn_unread_conversation_count', 'portal_discussion_count']})
+        self.assertEqual(counters['portal_discussion_count'], 1)
+        self.assertEqual(counters['wpn_unread_conversation_count'], 1, 'only the group chat the list shows')
+        self.assertNotIn('Install cabinets', self.url_open('/my/discussions').text)
+
+    def test_bridges_are_subclasses_of_the_portal_controllers(self):
+        # team review 10: a subclass comes before its base in Python's method order, whatever the import order
+        if not installed(self.env, 'woow_ai_task_portal_discuss'):
+            self.skipTest('woow_odoo_portal_discuss is not installed')
+        from odoo.addons.woow_ai_task_portal_discuss.controllers.portal import (  # noqa: PLC0415
+            WoowProjectAiPortalDiscussions)
+        from odoo.addons.woow_odoo_portal_discuss.controllers.portal import PortalDiscussions  # noqa: PLC0415
+        self.assertTrue(issubclass(WoowProjectAiPortalDiscussions, PortalDiscussions))
+        combined = type('Combined', (PortalDiscussions, WoowProjectAiPortalDiscussions)[::-1], {})
+        self.assertLess(combined.__mro__.index(WoowProjectAiPortalDiscussions),
+                        combined.__mro__.index(PortalDiscussions))
+
     # --- the global rule: a strict no-op elsewhere ---
 
     def test_rule_is_a_no_op_for_other_channels(self):

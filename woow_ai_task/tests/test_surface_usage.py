@@ -33,8 +33,13 @@ class TestSurfaceAndUsage(AiTaskFixtures, TransactionCase):
         self.project.woow_project_ai_customer_assistant_id = self.customer_n8n
         customer = self.open_tab(self.customer, 'customer')
         body = self.ask(customer, self.customer, http_response(200, {'reply': 'ok'}))
-        self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': self.project.id,
+        # the customer follows the task, not the project: no project in the surface (team review 34)
+        self.assertFalse(self.project.with_user(self.customer).has_access('read'))
+        self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': None,
                                            'task_id': self.task.id, 'tab': 'customer'})
+        self.project.message_subscribe(partner_ids=self.customer.partner_id.ids)
+        body = self.ask(customer, self.customer, http_response(200, {'reply': 'ok'}), text='q2')
+        self.assertEqual(body['surface']['project_id'], self.project.id)
         self.assertEqual(body['channel'], {'id': customer.id, 'type': 'group'})
         self.assertTrue(body['user']['is_portal'])
         logs = self.env['woow.project.ai.call.log'].search([('channel_id', 'in', (internal | customer).ids)])

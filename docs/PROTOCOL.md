@@ -67,7 +67,10 @@ of one task and one tab) and carries:
   n8n as `system_prompt`.
 - **session id**: `woow-project-ai-<first 8 hex of the database uuid>-<channel id>`.
 - **surface**: `{"type": "project_task", "project_id": 7, "task_id": 42, "tab": "internal" | "customer"}`
-  (n8n `surface`; LiteLLM `metadata.surface_*` string keys).
+  (n8n `surface`; LiteLLM `metadata.surface_*` string keys). `project_id`
+  only when the asker (and, in the internal chat, every colleague of the chat)
+  can read the project, else `null` (LiteLLM: no `surface_project_id`); the
+  internal project text follows the same rule.
 - **identity** of the person who asked (the author of the message being
   answered; no login is delegated):
 
@@ -109,7 +112,12 @@ further comment; customer messages written meanwhile are not answered later.
   request was sent (read timeout, reset, 5xx): the backend may already be
   working on it. Redirects are never followed (a 3xx is an error).
 - A failure posts the assistant's error message and is kept in the call log
-  (status, HTTP code, duration; never the upstream body).
+  (status, HTTP code, duration; never the upstream body). So does a question
+  that waited more than 30 minutes for its turn. In the customer chat both
+  also schedule the colleagues' To-Do (an open one is reused).
+- A file of a reply that cannot be read (network, TLS, a body cut short, a
+  bad encoding, a malformed redirect, the deadline) stays a link: it never
+  costs the answer or its call log.
 - Replies run in the cron process (*Project AI: Run AI Replies*), never in the
   web worker that received the message; `limit_time_real_cron` must allow the
   longest timeout + 60 s (+ 70 s with prefork workers), otherwise a thread of
@@ -230,9 +238,11 @@ File Size*, default 20 MB; no redirect outside the list) and attached; other
 links stay links. `data:image/…;base64` URIs in the text are attached without
 the list. n8n `data_base64` attachments are decoded with the same limit. The
 type is detected from the content; HTML, SVG, XML and scripts are stored as
-`application/octet-stream`. At most 10 files per reply, 100 MB together, all
-downloaded within 45 seconds (a host that sends its bytes slowly is cut off:
-the file stays a link).
+`application/octet-stream`. At most 10 files per reply; the files of one
+backend answer (all its replies) 100 MB together, all downloaded within 45
+seconds: the read timeouts are capped to the time left and, at the deadline,
+the connection's socket is shut down, so a host that trickles its status
+line, headers or body is cut off (the file stays a link).
 
 ## Push API (a later reply)
 
@@ -252,7 +262,9 @@ Posts into a task AI chat as the assistant, for n8n "skip, then push" (take
 `channel.id` from the webhook body). Only the assistant answering that chat
 now may push (same rules as a reply: assistant active, connection ready,
 customer chat safe for customers, task active), never while the AI is
-paused. Counted in the monthly usage like a reply; never answered.
+paused. Counted in the monthly usage like a reply, once the push is committed
+(on a READ COMMITTED cursor of its own, so a reply counted meanwhile never
+makes it fail); never answered.
 
 | Status | `error` | Meaning |
 |---|---|---|

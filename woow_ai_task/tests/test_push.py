@@ -9,7 +9,7 @@ from unittest.mock import patch
 from odoo import fields
 from odoo.tests.common import HttpCase, tagged
 
-from .common import AiTaskFixtures
+from .common import AiTaskFixtures, run_after_commit_usage
 
 
 @tagged('post_install', '-at_install', 'woow_ai_task')
@@ -27,8 +27,10 @@ class TestTaskPush(AiTaskFixtures, HttpCase):
         self.addCleanup(patcher.stop)
 
     def push(self, key, body, raw=None):
-        response = self.url_open('/woow_project_ai/v1/push', data=raw if raw is not None else json.dumps(body),
-                                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer %s' % key})
+        # the usage of a push is counted after the commit (team review 8): run it as the commit would
+        response, _counts = run_after_commit_usage(self, lambda: self.url_open(
+            '/woow_project_ai/v1/push', data=raw if raw is not None else json.dumps(body),
+            headers={'Content-Type': 'application/json', 'Authorization': 'Bearer %s' % key}))
         return response.status_code, response.json()
 
     def key(self, assistant):
