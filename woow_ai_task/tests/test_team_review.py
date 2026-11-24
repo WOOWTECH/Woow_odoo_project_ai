@@ -18,7 +18,7 @@ from odoo.tools import mute_logger
 
 from odoo.addons.woow_ai_task.models.discuss_channel import SWEEP_CURSOR_PARAM
 
-from .common import BACKEND_POST, AiTaskFixtures, http_response, openai_ok, run_after_commit_usage
+from .common import BACKEND_POST, AiTaskFixtures, http_response, run_after_commit_usage
 
 
 class ReviewHelpers:
@@ -367,32 +367,8 @@ class TestTeamReview(ReviewHelpers, AiTaskFixtures, TransactionCase):
         self.assertIn('not shared with portal users', self.project.woow_project_ai_customer_state_reason)
         self.assertIn('not_shared', self.project._woow_project_ai_tab_problems('customer'))
 
-    # --- 34: the internal project text needs the project ---
-
-    def test_34_internal_text_only_for_readers_of_the_project(self):
-        private = self.env['project.project'].create({
-            'name': 'Hidden', 'privacy_visibility': 'followers', 'user_id': self.manager.id,
-            'woow_project_ai_internal_assistant_id': self.internal_ai.id,
-            'woow_project_ai_internal_brief': 'HIDDEN PROJECT TEXT'})
-        task = self.env['project.task'].create({'name': 'Followed task', 'project_id': private.id})
-        task.message_subscribe(partner_ids=self.staff.partner_id.ids)
-        self.assertTrue(task.with_user(self.staff).has_access('read'))
-        self.assertFalse(private.with_user(self.staff).has_access('read'))
-        chat = self.open_tab(self.staff, 'internal', task=task)
-        self.post(chat, self.staff, 'what is this project about?')
-        with patch(BACKEND_POST, return_value=openai_ok('ok')) as post:
-            self.run_due(chat)
-        body = self.sent(post)
-        self.assertNotIn('HIDDEN PROJECT TEXT', json.dumps(body, ensure_ascii=False))
-        self.assertNotIn('surface_project_id', body['metadata'])
-        # once they follow the project: the text and the project go to the AI
-        private.message_subscribe(partner_ids=self.staff.partner_id.ids)
-        self.post(chat, self.staff, 'and now?')
-        with patch(BACKEND_POST, return_value=openai_ok('ok')) as post:
-            self.run_due(chat)
-        body = self.sent(post)
-        self.assertIn('HIDDEN PROJECT TEXT', body['messages'][0]['content'])
-        self.assertEqual(body['metadata'].get('surface_project_id'), str(private.id))
+    # --- 34: the internal project text needs the project: since the fix-delta review (item 7) the internal
+    # chat itself needs the project (test_delta_review.test_07_internal_chat_needs_the_project) ---
 
     # --- 39: the sweep resumes ---
 
@@ -400,19 +376,20 @@ class TestTeamReview(ReviewHelpers, AiTaskFixtures, TransactionCase):
         chats = self.open_tab(self.customer, 'customer') | self.open_tab(self.staff, 'internal')
         task2 = self.env['project.task'].create({'name': 'Second', 'project_id': self.project.id})
         chats |= self.open_tab(self.staff, 'internal', task=task2)
-        Param = self.env['ir.config_parameter'].sudo()
         Channel = self.env['discuss.channel']
         progress = []
         with patch.object(type(self.env['ir.cron']), '_notify_progress',
                           lambda cron, done, remaining, deactivate=False: progress.append((done, remaining))):
             self.assertEqual(Channel._woow_project_ai_cron_sync(batch_size=1, time_slice=0), 1)
-            self.assertEqual(Param.get_param(SWEEP_CURSOR_PARAM), str(min(chats.ids)))
+            self.assertEqual(Channel._woow_project_ai_sweep_cursor(), min(chats.ids))
             self.assertEqual(progress[-1], (1, 2))
             self.assertEqual(Channel._woow_project_ai_cron_sync(batch_size=1, time_slice=0), 1)
             self.assertEqual(Channel._woow_project_ai_cron_sync(batch_size=1, time_slice=0), 1)
             self.assertEqual(progress[-1], (1, 0))
-            self.assertEqual(Param.get_param(SWEEP_CURSOR_PARAM), '0', 'a full round: the next one starts over')
+            self.assertEqual(Channel._woow_project_ai_sweep_cursor(), 0, 'a full round: the next one starts over')
             self.assertEqual(Channel._woow_project_ai_cron_sync(batch_size=10), 3)
+        self.env.cr.execute("SELECT value FROM ir_config_parameter WHERE key = %s", [SWEEP_CURSOR_PARAM])
+        self.assertEqual(self.env.cr.fetchone(), ('0',))
 
     # --- 40: what "Ready" means per tab ---
 

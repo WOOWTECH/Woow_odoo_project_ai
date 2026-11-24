@@ -11,9 +11,11 @@ from . import project_project
 from . import project_task
 from . import discuss_channel
 from . import discuss_channel_member
+from . import mail_thread
 from . import mail_message
 from . import ir_attachment
 from . import bus_bus
+from . import base
 from . import project_collaborator
 from . import res_partner
 from . import res_users

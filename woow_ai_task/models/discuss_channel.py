@@ -105,9 +105,12 @@ def posted_by_this_module(env, channel_id):
     return isinstance(marker, PostMarker) and marker.channel_id == channel_id
 
 TASK_LINK_FIELDS = {'woow_project_ai_task_id', 'woow_project_ai_tab'}
-# the hourly membership sweep: where it stopped (a channel id), and how long one call runs
+# the hourly membership sweep: where it stopped (a channel id, kept with SQL: no cache invalidation), how long
+# one call runs, what it leaves of the cron pass's own time limit, and when a pass out of time goes on
 SWEEP_CURSOR_PARAM = 'woow_ai_task.sweep_cursor'
 SWEEP_SLICE_SECONDS = 120
+SWEEP_LIMIT_MARGIN_SECONDS = 30
+SWEEP_NEXT_PASS_SECONDS = 60
 # (db, user) whose task rules could not be evaluated, logged once per process
 _rule_errors_logged = set()
 TASK_STATE_FIELDS = {'woow_project_ai_paused_until', 'woow_project_ai_notice_sent'}
@@ -191,7 +194,7 @@ class DiscussChannel(models.Model):
         string='Project AI Chat Readable', compute='_compute_woow_project_ai_readable',
         search='_search_woow_project_ai_readable',
         help='Not a task AI chat, or the current user can read its task now (internal chats: employees with '
-             'Project rights).')
+             'Project rights who can read its project too).')
 
     _sql_constraints = [
         ('woow_project_ai_tab_uniq', 'unique(woow_project_ai_task_id, woow_project_ai_tab)',
@@ -232,7 +235,8 @@ class DiscussChannel(models.Model):
         rules are evaluated as superuser) may read as far as task AI chats go:
         every channel that is not one; a task chat while the user can read its
         task now, by Odoo's own rules over all of the user's active
-        companies; the internal chat only for employees with Project rights.
+        companies; the internal chat only for employees with Project rights
+        who can read the task's project too.
         For any other channel the domain is always true
         (``woow_project_ai_task_id`` is empty): the rule changes nothing
         there, for any user (public, guests, portal, employees, whatever
@@ -253,6 +257,13 @@ class DiscussChannel(models.Model):
             # sub-query: nothing is executed here
             tasks = Task._search([('id', 'in', SQL(
                 "(SELECT woow_project_ai_task_id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))])
+            internal_tasks = None
+            if user._is_internal() and user.has_group(PROJECT_USER_GROUP):
+                # the internal chats: the task's project readable too (its internal text is in the chat)
+                Project = self.env['project.project'].with_user(user).with_context(
+                    active_test=False, allowed_company_ids=list(user._get_company_ids()))
+                internal_tasks = Task._search([
+                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', Project._search([]))])
         except psycopg2.Error:
             raise  # the transaction is aborted: swallowing it would only move the failure to the next query
         except Exception:  # noqa: BLE001 - AccessError, a task rule that cannot be evaluated for this user...
@@ -263,11 +274,12 @@ class DiscussChannel(models.Model):
                 _logger.warning("Project AI: user %s cannot be checked against the task rules; no task AI chat "
                                 "is readable for them", user.id, exc_info=True)
             return no_task_chat
-        if user._is_internal() and user.has_group(PROJECT_USER_GROUP):
-            return ['|', ('woow_project_ai_task_id', '=', False), ('woow_project_ai_task_id', 'in', tasks)]
+        customer = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
+        if internal_tasks is not None:
+            return ['|', ('woow_project_ai_task_id', '=', False), '|'] + customer + [
+                '&', ('woow_project_ai_tab', '=', TAB_INTERNAL), ('woow_project_ai_task_id', 'in', internal_tasks)]
         # portal users, and employees without Project rights: the customer chats only
-        return ['|', ('woow_project_ai_task_id', '=', False),
-                '&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
+        return ['|', ('woow_project_ai_task_id', '=', False)] + customer
 
     # --- Helpers ---
 
@@ -478,6 +490,11 @@ class DiscussChannel(models.Model):
         if self._woow_project_ai_is_task_chat():
             if not self.env.su:
                 self._woow_project_ai_check_post(COMMENT, {})
+                # only its author edits (or empties) a message of a task chat: Odoo also lets administrators
+                # edit any message, which would take a customer's or the AI's words and files out of the chat
+                if message.sudo().author_id != self.env.user.partner_id:
+                    raise AccessError(self.env._('Only its author can edit or delete a message of a task AI '
+                                                 'conversation.'))
                 if attachment_ids:
                     # files kept on the message, or the author's own new uploads (never another one's file)
                     self._woow_project_ai_check_own_files(attachment_ids, message)
@@ -704,28 +721,78 @@ class DiscussChannel(models.Model):
         members.channel_id._woow_project_ai_sync()
 
     @api.model
+    def _woow_project_ai_sweep_cursor(self):
+        """Where the sweep stopped (a channel id; 0: start of a round). Read and
+        written with SQL, like the cron runner report (ai_job STATE_PARAM):
+        ir.config_parameter's ORM write would clear the caches of every
+        process at each batch."""
+        self.env.cr.execute("SELECT value FROM ir_config_parameter WHERE key = %s", [SWEEP_CURSOR_PARAM])
+        row = self.env.cr.fetchone()
+        try:
+            return max(0, int(row[0])) if row else 0
+        except (TypeError, ValueError):
+            return 0
+
+    @api.model
+    def _woow_project_ai_set_sweep_cursor(self, value):
+        self.env.cr.execute("""
+            INSERT INTO ir_config_parameter (key, value, create_uid, write_uid, create_date, write_date)
+            VALUES (%s, %s, %s, %s, statement_timestamp() AT TIME ZONE 'UTC', statement_timestamp() AT TIME ZONE 'UTC')
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, write_date = EXCLUDED.write_date
+        """, [SWEEP_CURSOR_PARAM, str(int(value or 0)), SUPERUSER_ID, SUPERUSER_ID])
+
+    @api.model
+    def _woow_project_ai_sweep_deadline(self, time_slice):
+        """(deadline, pass_bound): when this call stops (time.monotonic()), and
+        whether that is the cron pass's own time limit rather than the slice.
+        In a cron pass (Odoo runs a callback that reports progress up to 10
+        times in the same pass, under the same real-time limit) the call keeps
+        SWEEP_LIMIT_MARGIN_SECONDS of what the pass has left (ai_job
+        _cron_pass_left, as the dispatcher measures it)."""
+        from . import ai_job  # noqa: PLC0415 - ai_job imports this module (through project_task)
+        now = time.monotonic()
+        if self.env.context.get('cron_id'):
+            left = ai_job._cron_pass_left()
+            if left is not None and left - SWEEP_LIMIT_MARGIN_SECONDS < time_slice:
+                return now + max(0.0, left - SWEEP_LIMIT_MARGIN_SECONDS), True
+        return now + time_slice, False
+
+    @api.model
     def _woow_project_ai_cron_sync(self, batch_size=CRON_BATCH, time_slice=SWEEP_SLICE_SECONDS):
         """Hourly sweep: removes the members who lost the task access by a
         change no trigger saw (a record rule, a commercial partner...). In
-        batches, each committed (a failing batch is logged and skipped: the
-        next sweep tries it again), for at most ``time_slice`` seconds per
-        call: it then keeps where it stopped (SWEEP_CURSOR_PARAM) and tells
-        Odoo's cron how many chats are left (ir.cron._notify_progress), which
-        runs it again at once; the next call goes on from there, so a sweep
-        that outgrows the cron's time limit still reaches every chat. Returns
-        the number of chats synced by this call."""
-        Param = self.env['ir.config_parameter'].sudo()
-        try:
-            after = int(Param.get_param(SWEEP_CURSOR_PARAM) or 0)
-        except (TypeError, ValueError):
-            after = 0
+        batches, each committed with the sweep's cursor (a failing batch is
+        logged and skipped: the next sweep tries it again).
+
+        One call runs at least one batch and at most ``time_slice`` seconds,
+        then tells Odoo's cron how many chats are left
+        (ir.cron._notify_progress): Odoo runs it again at once, in the same
+        pass. A call never runs past what the cron pass has left of its time
+        limit (_woow_project_ai_sweep_deadline): when the pass is out of time
+        it reports nothing left, so that Odoo ends the pass, and triggers the
+        cron again in SWEEP_NEXT_PASS_SECONDS, in a fresh pass. Every call
+        goes on from the cursor, so a sweep that outgrows the cron's time
+        limit still reaches every chat. Returns the number of chats synced by
+        this call."""
+        after = self._woow_project_ai_sweep_cursor()
         Channel = self.sudo().with_context(active_test=False)
+        Cron = self.env['ir.cron']
         channels = Channel.search([('woow_project_ai_task_id', '!=', False), ('id', '>', after)], order='id')
         auto_commit = not getattr(threading.current_thread(), 'testing', False)
-        deadline = time.monotonic() + time_slice
+        deadline, pass_bound = self._woow_project_ai_sweep_deadline(time_slice)
         done = 0
-        last = after
         for start in range(0, len(channels), batch_size):
+            if time.monotonic() >= deadline and (done or pass_bound):
+                if pass_bound:
+                    # out of the pass's time: end the pass, go on in a fresh one
+                    Cron._notify_progress(done=done, remaining=0)
+                    cron_id = self.env.context.get('cron_id')
+                    if cron_id:
+                        Cron.browse(cron_id)._trigger(
+                            fields.Datetime.now() + timedelta(seconds=SWEEP_NEXT_PASS_SECONDS))
+                else:
+                    Cron._notify_progress(done=done, remaining=len(channels) - done)
+                return done
             # a chat deleted since the search (its task was deleted) must not abort its whole batch
             ids = channels[start:start + batch_size].ids
             batch = Channel.browse(ids).exists()
@@ -737,17 +804,12 @@ class DiscussChannel(models.Model):
                     _logger.exception("Project AI task chats %s..%s: membership sweep failed", ids[0], ids[-1])
                     self.env.invalidate_all()
             done += len(ids)
-            last = ids[-1]
-            remaining = len(channels) - done
-            Param.set_param(SWEEP_CURSOR_PARAM, str(last) if remaining else '0')
+            self._woow_project_ai_set_sweep_cursor(ids[-1] if len(channels) > done else 0)
             if auto_commit:
                 self.env.cr.commit()  # pylint: disable=invalid-commit
-            if remaining and time.monotonic() > deadline:
-                self.env['ir.cron']._notify_progress(done=done, remaining=remaining)
-                return done
         if after and not channels:
-            Param.set_param(SWEEP_CURSOR_PARAM, '0')  # a full round ended: the next sweep starts again
-        self.env['ir.cron']._notify_progress(done=done, remaining=0)
+            self._woow_project_ai_set_sweep_cursor(0)  # a full round ended: the next sweep starts again
+        Cron._notify_progress(done=done, remaining=0)
         return done
 
     # --- Pause ---
@@ -1070,18 +1132,17 @@ class DiscussChannel(models.Model):
         return people.with_context(active_test=False).user_ids.filtered('active')
 
     def _woow_project_ai_project_shared(self, requester):
-        """Whether `requester` (and, in the internal chat, every person of the
-        chat) can read the task's project now: then the internal project text
-        and the project's id go to the AI."""
+        """Whether `requester` and every person of the chat can read the
+        task's project now: then the project's id goes to the AI (and, in the
+        internal chat, the internal project text)."""
         self.ensure_one()
         channel = self.sudo()
         task = channel.woow_project_ai_task_id
         project = task.project_id
         if not project or not requester:
             return False
-        users = requester
-        if channel.woow_project_ai_tab == TAB_INTERNAL:
-            users |= channel._woow_project_ai_member_users()
+        # every person of the chat reads the answer (a portal user may read a task without its project too)
+        users = requester | channel._woow_project_ai_member_users()
         for user in users:
             readable = project.with_user(user).with_context(
                 active_test=False, allowed_company_ids=task._woow_project_ai_company_ids(user))

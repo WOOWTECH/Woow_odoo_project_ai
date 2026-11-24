@@ -9,7 +9,7 @@
                 <page string="AI Assistants" name="woow_project_ai_assistants" groups="project.group_project_user">
                     <div class="alert alert-info" role="status">
                         With an internal AI assistant, every task of this project gets an "Internal AI chat"
-                        (colleagues with Project rights who can read the task); with a customer AI assistant and a
+                        (colleagues with Project rights who can read the task and this project); with a customer AI assistant and a
                         project shared with portal users, a "Customer AI chat" (portal users who can read the task,
                         also on the portal task page). The internal AI answers every message of the colleagues; the
                         customer AI answers the customers and pauses after a colleague writes. System administrators

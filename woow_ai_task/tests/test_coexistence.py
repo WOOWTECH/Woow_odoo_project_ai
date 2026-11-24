@@ -13,6 +13,7 @@ installed (the sandbox's coexistence database); elsewhere it is skipped.
 - nothing is shared: models, crons, routes and push keys differ."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from odoo import Command
@@ -94,6 +95,8 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
     def test_task_chats_never_in_portal_discussions(self):
         if not installed(self.env, 'woow_odoo_portal_discuss'):
             self.skipTest('woow_odoo_portal_discuss is not installed')
+        # the bridge is what holds in any load order (delta review 10): installed with both sides
+        self.assertTrue(installed(self.env, 'woow_ai_task_portal_discuss'), 'the bridge must be installed')
         customer_chat = self.open_tab(self.customer, 'customer')
         self.post(customer_chat, self.customer, 'a question in the task chat')
         # a plain group chat of the customer (with a colleague) is listed: the filter hides task chats only
@@ -119,8 +122,9 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
     def test_notification_centre_counts_what_the_list_shows(self):
         # team review 3 / 38: the centre's "unread conversations" (the /my card and the /my/notifications
         # notice, both linking to /my/discussions) leaves out the task chats the list leaves out
-        if not installed(self.env, 'woow_ai_task_portal_notification'):
-            self.skipTest('the portal notification centre is not installed')
+        if not installed(self.env, 'woow_portal_notification_discuss'):
+            self.skipTest('woow_portal_notification_discuss is not installed')
+        self.assertTrue(installed(self.env, 'woow_ai_task_portal_notification'), 'the bridge must be installed')
         customer_chat = self.open_tab(self.customer, 'customer')
         self.open_tab(self.staff, 'customer')
         self.post(customer_chat, self.staff, 'a colleague answers in the task chat')
@@ -138,17 +142,70 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
         self.assertEqual(counters['wpn_unread_conversation_count'], 1, 'only the group chat the list shows')
         self.assertNotIn('Install cabinets', self.url_open('/my/discussions').text)
 
-    def test_bridges_are_subclasses_of_the_portal_controllers(self):
-        # team review 10: a subclass comes before its base in Python's method order, whatever the import order
-        if not installed(self.env, 'woow_ai_task_portal_discuss'):
+    def test_task_chat_unread_in_the_notification_centre(self):
+        # delta review 8: the customer's unread task chat messages have their own notice and /my card, which
+        # open the task page (one task) or the customer's tasks, never /my/discussions
+        if not installed(self.env, 'woow_portal_notification_discuss'):
+            self.skipTest('woow_portal_notification_discuss is not installed')
+        self.assertTrue(installed(self.env, 'woow_ai_task_portal_notification'), 'the bridge must be installed')
+        chat = self.open_tab(self.customer, 'customer')
+        self.open_tab(self.staff, 'customer')
+        self.post(chat, self.staff, 'a colleague answers later')
+        member = chat.sudo().channel_member_ids.filtered(lambda m: m.partner_id == self.customer.partner_id)
+        unread = member.message_unread_counter
+        self.assertGreater(unread, 0)
+        task_url = '/my/tasks/%s#woow_project_ai_chat' % self.task.id
+        self.authenticate('aitask_customer', 'aitask_customer')
+        counters = self.make_jsonrpc_request('/my/counters', {
+            'counters': ['woow_project_ai_unread_chat_count', 'wpn_unread_conversation_count']})
+        self.assertEqual(counters['woow_project_ai_unread_chat_count'], unread)
+        self.assertEqual(counters['wpn_unread_conversation_count'], 0, 'not in the Discussions count')
+        page = self.url_open('/my/notifications')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('%s unread messages in your task AI chats' % unread, page.text)
+        self.assertIn(task_url, page.text)
+        self.assertIn('/my/woow_project_ai/unread', self.url_open('/my').text, 'the /my card')
+        opened = self.url_open('/my/woow_project_ai/unread', allow_redirects=False)
+        self.assertIn(opened.status_code, (301, 302, 303))
+        self.assertTrue(opened.headers['Location'].endswith(task_url))
+        # unread in two tasks: the customer's tasks
+        task2 = self.env['project.task'].create({'name': 'Paint walls', 'project_id': self.project.id})
+        task2.message_subscribe(partner_ids=self.customer.partner_id.ids)
+        chat2 = self.open_tab(self.customer, 'customer', task=task2)
+        self.open_tab(self.staff, 'customer', task=task2)
+        self.post(chat2, self.staff, 'another answer')
+        opened = self.url_open('/my/woow_project_ai/unread', allow_redirects=False)
+        self.assertTrue(opened.headers['Location'].endswith('/my/tasks'))
+        # a task the customer cannot read any more: not counted (their own rights)
+        self.env.flush_all()
+        self.env.cr.execute("DELETE FROM mail_followers WHERE res_model = 'project.task' AND res_id IN %s "
+                            "AND partner_id = %s", ((self.task.id, task2.id), self.customer.partner_id.id))
+        self.env.invalidate_all()
+        counters = self.make_jsonrpc_request('/my/counters', {'counters': ['woow_project_ai_unread_chat_count']})
+        self.assertEqual(counters['woow_project_ai_unread_chat_count'], 0)
+        self.assertNotIn('unread messages in your task AI chats', self.url_open('/my/notifications').text)
+
+    def test_bridges_filter_whatever_the_import_order(self):
+        # delta review 10: the order after a late import (a portal module installed into a running server)
+        # puts that module's leaf controller first: the bridge's filter holds there, the module's own
+        # override does not (why the bridge exists)
+        if not installed(self.env, 'woow_odoo_portal_discuss'):
             self.skipTest('woow_odoo_portal_discuss is not installed')
+        self.assertTrue(installed(self.env, 'woow_ai_task_portal_discuss'), 'the bridge must be installed')
+        from odoo.addons.woow_ai_task.controllers.portal import WoowProjectAiPortal  # noqa: PLC0415
         from odoo.addons.woow_ai_task_portal_discuss.controllers.portal import (  # noqa: PLC0415
-            WoowProjectAiPortalDiscussions)
-        from odoo.addons.woow_odoo_portal_discuss.controllers.portal import PortalDiscussions  # noqa: PLC0415
-        self.assertTrue(issubclass(WoowProjectAiPortalDiscussions, PortalDiscussions))
-        combined = type('Combined', (PortalDiscussions, WoowProjectAiPortalDiscussions)[::-1], {})
-        self.assertLess(combined.__mro__.index(WoowProjectAiPortalDiscussions),
-                        combined.__mro__.index(PortalDiscussions))
+            NOT_A_TASK_CHAT, WoowProjectAiPortalDiscussions)
+        from odoo.addons.woow_odoo_portal_discuss.controllers import portal as portal_discuss  # noqa: PLC0415
+
+        def combined(*bases):
+            # outside odoo.addons: never picked up by Odoo's routing (http.py keeps addon classes only)
+            return type('LateImport', bases, {'__module__': 'woow_ai_task_test_late_import'})()
+
+        with patch.object(portal_discuss, 'request', SimpleNamespace(env=self.env(user=self.customer))):
+            late = combined(WoowProjectAiPortalDiscussions, WoowProjectAiPortal)._get_portal_discussion_domain()
+            bare = combined(portal_discuss.PortalDiscussions, WoowProjectAiPortal)._get_portal_discussion_domain()
+        self.assertIn(NOT_A_TASK_CHAT[0], late)
+        self.assertNotIn(NOT_A_TASK_CHAT[0], bare)
 
     # --- the global rule: a strict no-op elsewhere ---
 

@@ -6,11 +6,27 @@ when it is removed from a conversation. So a member removed by the sync (or
 at post time: the message whose post removes them is sent in the same
 transaction as the removal) would keep receiving the conversation's new
 messages in a page left open. Every poll (websocket dispatch, peek) is made
-with the session user's environment, after the commit: the task chats among
-the polled channels that this user cannot read now (the global rule, and
-membership) are left out of the poll."""
+with the session user's environment, after the commit: the task chats with
+notifications pending in this poll that this user cannot read now (the
+global rule, and membership) are left out of it.
 
-from odoo import api, models
+Cost: which channel ids are task chats is kept per process, on the registry
+(the link is set when a chat is created and never changes; ids are never
+reused), so a poll without any task chat costs nothing more; with task
+chats, one query on bus_bus tells whether this poll carries anything for
+them, and only then the user's readable search runs, for those chats only
+(never cached: the access is checked at each poll)."""
+
+import datetime
+
+from odoo import api, fields, models
+
+from odoo.addons.bus.models.bus import TIMEOUT, channel_with_db, json_dump
+
+# {channel id: is a task chat}, kept on the registry (a new registry, after a module update or a database
+# restore, starts empty); started again when it grows past this
+CACHE_ATTRIBUTE = '_woow_project_ai_task_chat_ids'
+MAX_CACHED_IDS = 50000
 
 
 def _channel_id(channel):
@@ -32,26 +48,61 @@ class BusBus(models.Model):
     @api.model
     def _poll(self, channels, last=0, ignore_ids=None):
         if not self.env.su:
-            channels = self._woow_project_ai_readable_channels(channels)
+            channels = self._woow_project_ai_readable_channels(channels, last, ignore_ids)
         return super()._poll(channels, last=last, ignore_ids=ignore_ids)
 
     @api.model
-    def _woow_project_ai_readable_channels(self, channels):
+    def _woow_project_ai_task_chats(self, ids):
+        """Those of `ids` that are task AI chats (cached per process)."""
+        registry = self.env.registry
+        known = getattr(registry, CACHE_ATTRIBUTE, None)
+        if known is None or len(known) > MAX_CACHED_IDS:
+            known = {}
+            setattr(registry, CACHE_ATTRIBUTE, known)
+        unknown = [i for i in ids if i not in known]
+        if unknown:
+            self.env.cr.execute("SELECT id FROM discuss_channel WHERE id = ANY(%s) "
+                                "AND woow_project_ai_task_id IS NOT NULL", [unknown])
+            found = {row[0] for row in self.env.cr.fetchall()}
+            for i in unknown:
+                known[i] = i in found
+        return {i for i in ids if known.get(i)}
+
+    @api.model
+    def _woow_project_ai_readable_channels(self, channels, last=0, ignore_ids=None):
         channels = list(channels or ())
         ids = {cid for cid in map(_channel_id, channels) if cid}
-        if not ids:
-            return channels
-        self.env.cr.execute("SELECT id FROM discuss_channel WHERE id = ANY(%s) AND woow_project_ai_task_id IS NOT NULL",
-                            [list(ids)])
-        task_chats = {row[0] for row in self.env.cr.fetchall()}
+        task_chats = self._woow_project_ai_task_chats(ids) if ids else set()
         if not task_chats:
+            return channels
+        # anything pending for them in this poll? (the same window as Odoo's _poll)
+        db_name = self.env.cr.dbname
+        names = {}
+        for channel in channels:
+            cid = _channel_id(channel)
+            if cid in task_chats:
+                names[json_dump(channel_with_db(db_name, channel))] = cid
+        if last == 0:
+            condition = "create_date > %s"
+            value = fields.Datetime.now() - datetime.timedelta(seconds=TIMEOUT)
+        else:
+            condition = "id > %s"
+            value = last
+        query = "SELECT DISTINCT channel FROM bus_bus WHERE channel = ANY(%s) AND " + condition
+        params = [list(names), value]
+        if ignore_ids:
+            query += " AND NOT (id = ANY(%s))"
+            params.append(list(ignore_ids))
+        self.env.cr.execute(query, params)
+        pending = {names[row[0]] for row in self.env.cr.fetchall() if row[0] in names}
+        if not pending:
             return channels
         readable = set()
         if self.env.uid and not self.env.user._is_public():
             # the poller's own rights: Odoo's membership rule and this module's task access rule
             readable = set(self.env['discuss.channel'].with_context(active_test=False).search(
-                [('id', 'in', list(task_chats))]).ids)
-        dropped = task_chats - readable
+                [('id', 'in', list(pending))]).ids)
+        dropped = pending - readable
         if not dropped:
             return channels
         return [channel for channel in channels if _channel_id(channel) not in dropped]

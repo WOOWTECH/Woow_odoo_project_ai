@@ -143,12 +143,13 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
         wizard = self.env['portal.wizard'].create({'partner_ids': self.customer2.partner_id.ids})
         wizard.user_ids.filtered(lambda w: w.partner_id == self.customer2.partner_id).action_revoke_access()
         self.assertNotIn(self.customer2.partner_id, self.members(customer_chat))
-        # the project privacy: only invited employees
+        # the project privacy: only invited employees (the internal chat: those who can read the project too)
         self.open_tab(self.staff2, 'customer')
+        self.project.message_subscribe(partner_ids=self.staff.partner_id.ids)
         self.project.privacy_visibility = 'followers'
         self.assertNotIn(self.staff2.partner_id, self.members(internal))
         self.assertNotIn(self.staff2.partner_id, self.members(customer_chat))
-        self.assertIn(self.staff.partner_id, self.members(internal), 'the assignee keeps the access')
+        self.assertIn(self.staff.partner_id, self.members(internal), 'the assignee following the project stays')
         # an archived employee
         self.staff.active = False
         self.assertNotIn(self.staff.partner_id, self.members(internal))

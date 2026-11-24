@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- /my: an alert card for the unread messages of the customer's task AI chats, in Odoo's alert category
+         (below the notification centre's own category, which keeps the centre's cards only); counted through
+         /my/counters, hidden when there is nothing to count. It opens the task page when one task has unread
+         messages, else the customer's tasks. The centre's /my/notifications page has the same notice. -->
+    <template id="portal_my_home" inherit_id="portal.portal_my_home"
+              name="Project AI: unread task AI chat messages card">
+        <xpath expr="//div[hasclass('o_portal_docs')]" position="before">
+            <t t-set="portal_alert_category_enable" t-value="True"/>
+        </xpath>
+        <div id="portal_alert_category" position="inside">
+            <t t-call="portal.portal_docs_entry">
+                <t t-set="bg_color" t-value="'alert alert-primary align-items-center'"/>
+                <t t-set="placeholder_count" t-value="'woow_project_ai_unread_chat_count'"/>
+                <t t-set="title">Unread messages in your task AI chats</t>
+                <t t-set="url" t-value="'/my/woow_project_ai/unread'"/>
+                <t t-set="show_count" t-value="True"/>
+            </t>
+        </div>
+    </template>
+
+</odoo>

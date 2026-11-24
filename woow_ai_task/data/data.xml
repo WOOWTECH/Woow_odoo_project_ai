@@ -27,10 +27,11 @@
             <field name="interval_type">days</field>
             <field name="active" eval="True"/>
         </record>
-    </data>
-    <data noupdate="0">
+
         <!-- Removes the members who lost the task access by a change no trigger saw (a record rule, a
-             commercial partner, ...); the triggers handle the usual changes at once. -->
+             commercial partner, ...); the triggers handle the usual changes at once. noupdate like the other
+             crons: an upgrade must not rewrite a cron that may be running (ir.cron.write refuses a running
+             cron at once), nor switch it back on; a later change goes through a migration script. -->
         <record id="ir_cron_project_ai_sync_members" model="ir.cron">
             <field name="name">Project AI: Sync Task Chat Members</field>
             <field name="model_id" ref="mail.model_discuss_channel"/>

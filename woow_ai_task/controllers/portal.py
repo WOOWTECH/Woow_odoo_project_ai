@@ -8,7 +8,10 @@ new tab.
 Task AI chats are left out of the portal discussion list of
 woow_odoo_portal_discuss (/my/discussions, when that module is installed):
 they are opened from the task page, which checks the task access every time,
-while the list reads with sudo and shows the last message."""
+while the list reads with sudo and shows the last message. The filter that
+holds whatever the load order is the bridge woow_ai_task_portal_discuss
+(installed automatically with both modules); the override here is defence in
+depth (see _get_portal_discussion_domain)."""
 
 import re
 from urllib.parse import quote
@@ -107,14 +110,20 @@ class WoowProjectAiPortal(ProjectCustomerPortal):
     def _get_portal_discussion_domain(self):
         """Defined by woow_odoo_portal_discuss (the /my/discussions list and its
         home card, read with sudo), whose own version does not call super.
-        Odoo combines the leaf portal controllers in reverse order of
-        definition, walking CustomerPortal's subclasses in the order they were
-        defined: this class (a subclass of project's ProjectCustomerPortal)
-        comes first because project is loaded after woow_odoo_portal_discuss
-        (which needs portal and mail only). Should that change, task chats
-        would show in the list again: the coexistence test
-        (tests/test_coexistence.py) checks the list itself. Without that module
-        there is nothing to filter."""
+
+        The order-independent filter is the bridge woow_ai_task_portal_discuss:
+        a subclass of that module's controller, so it comes first in the
+        combined portal controller whatever the import order (installed
+        automatically with both modules). This override is defence in depth:
+        it only matters while the bridge is not installed, and only in graph
+        order (Odoo combines the leaf portal controllers walking
+        CustomerPortal's subclasses in the order they were defined; project,
+        and so this module, loads after woow_odoo_portal_discuss, which needs
+        portal and mail only, so this class comes first). A portal discussion
+        module imported later (installed into a running server) would come
+        first instead and drop it: that is what the bridge is for, and what
+        tests/test_coexistence.py checks. Without that module there is
+        nothing to filter."""
         parent = getattr(super(), '_get_portal_discussion_domain', None)
         if parent is None:
             return NOT_A_TASK_CHAT

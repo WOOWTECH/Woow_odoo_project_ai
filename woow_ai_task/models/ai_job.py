@@ -317,6 +317,24 @@ def _cron_limit(threaded=None):
     return max(0, int(limit or 0))
 
 
+def _cron_pass_left():
+    """Seconds the current cron pass may still run before Odoo's real-time
+    limit (None: no limit), measured as for the dispatcher (_dispatch_settings):
+    threaded, since the cron thread started this database; prefork, since the
+    worker's last watchdog ping."""
+    thread = threading.current_thread()
+    threaded = getattr(thread, 'type', None) == 'cron'
+    limit = _cron_limit(threaded)
+    if not limit:
+        return None
+    if threaded:
+        start_time = getattr(thread, 'start_time', None)
+        used = max(0.0, time.time() - start_time) if start_time else 0.0
+    else:
+        used = _prefork_pass_used()
+    return limit - used
+
+
 def _pool_free_connections():
     """Connections still free in this process' pool (odoo.sql_db), or None."""
     try:

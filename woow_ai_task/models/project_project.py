@@ -39,8 +39,8 @@ class ProjectProject(models.Model):
         'woow.project.ai.assistant', string='Internal AI Assistant', ondelete='restrict', index='btree_not_null',
         groups=PROJECT_USER_GROUP, domain=ASSISTANT_DOMAIN,
         help='Answers the "Internal AI chat" of every task of this project (colleagues with Project rights who '
-             'can read the task). Its backend may look up company data, read only: a property of its AI '
-             'connection, set up by a system administrator.')
+             'can read the task and this project). Its backend may look up company data, read only: a property '
+             'of its AI connection, set up by a system administrator.')
     woow_project_ai_customer_assistant_id = fields.Many2one(
         'woow.project.ai.assistant', string='Customer AI Assistant', ondelete='restrict', index='btree_not_null',
         groups=PROJECT_USER_GROUP, domain=CUSTOMER_ASSISTANT_DOMAIN,
@@ -55,9 +55,9 @@ class ProjectProject(models.Model):
         groups=PROJECT_USER_GROUP)
     woow_project_ai_internal_brief = fields.Text(
         string='Project Text for the Internal AI', groups=PROJECT_USER_GROUP,
-        help='Sent to the internal AI with every question, after its own prompt, while the colleague who asks '
-             'and every colleague of that chat can read this project (a task follower may read a task of a '
-             'project hidden to them).')
+        help='Sent to the internal AI with every question, after its own prompt. The internal chat of a task is '
+             'only for colleagues who can read this project too (a task follower may read a task of a project '
+             'hidden to them): whoever reads the chat, earlier answers included, may read this text.')
     woow_project_ai_customer_brief = fields.Text(
         string='Project Text for the Customer AI', groups=PROJECT_USER_GROUP,
         help='Sent to the customer AI with every question, after its own prompt. The only project text the '

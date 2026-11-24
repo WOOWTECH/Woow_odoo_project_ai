@@ -68,9 +68,11 @@ of one task and one tab) and carries:
 - **session id**: `woow-project-ai-<first 8 hex of the database uuid>-<channel id>`.
 - **surface**: `{"type": "project_task", "project_id": 7, "task_id": 42, "tab": "internal" | "customer"}`
   (n8n `surface`; LiteLLM `metadata.surface_*` string keys). `project_id`
-  only when the asker (and, in the internal chat, every colleague of the chat)
-  can read the project, else `null` (LiteLLM: no `surface_project_id`); the
-  internal project text follows the same rule.
+  only when every person of the chat (the asker included) can read the
+  project, else `null` (LiteLLM: no `surface_project_id`): everyone in the
+  chat reads the answer, and a customer may read a task without its project.
+  The internal project text follows the same rule (the internal chat is only
+  for colleagues who can read the project).
 - **identity** of the person who asked (the author of the message being
   answered; no login is delegated):
 

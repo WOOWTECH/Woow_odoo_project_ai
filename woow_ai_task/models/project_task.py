@@ -123,10 +123,11 @@ class ProjectTask(models.Model):
     def _woow_project_ai_user_allowed(self, user, tab):
         """True when `user` may be in the AI conversation `tab` of this task now:
         an active user of the tab's audience (internal chat: employees with
-        Project rights, as the internal project text the AI gets is theirs;
-        customer chat: portal users and employees) who can read the task by
-        Odoo's own rules (portal: the portal task rules), over all of their
-        active companies. Never sudo."""
+        Project rights who can read the task's project too, as the internal
+        project text the AI gets, and quotes, is the project's; customer chat:
+        portal users and employees) who can read the task by Odoo's own rules
+        (portal: the portal task rules), over all of their active companies.
+        Never sudo."""
         self.ensure_one()
         if not user or not user.active or user._is_public():
             return False
@@ -137,7 +138,15 @@ class ProjectTask(models.Model):
         task = self.with_user(user).with_context(active_test=False,
                                                  allowed_company_ids=self._woow_project_ai_company_ids(user))
         try:
-            return task.has_access('read')
+            if not task.has_access('read'):
+                return False
+            # the internal chat carries the project's internal text (in the AI's answers too): only for
+            # people who can read the project, not only the task (a follower of a task in a project hidden
+            # to them)
+            project = task.sudo().project_id
+            if tab == TAB_INTERNAL and project:
+                return project.with_env(task.env).has_access('read')
+            return True
         except AccessError:
             return False
 
