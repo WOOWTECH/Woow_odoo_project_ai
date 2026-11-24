@@ -103,25 +103,15 @@ class IrAttachment(models.Model):
              WHERE a.id = ANY(%s)""", [ids])
         return {row[0]: row[1:] for row in self.env.cr.fetchall()}
 
-    @api.model
-    def _woow_project_ai_may_target_channel(self, vals_list):
-        """Whether these values (or a default) may put a file in a channel."""
-        if any(vals.get('res_model') == 'discuss.channel' for vals in vals_list):
-            return True
-        if self.env.context.get('default_res_model') == 'discuss.channel':
-            return True
-        return self.env['ir.default']._get_model_defaults(self._name).get('res_model') == 'discuss.channel'
-
     @api.model_create_multi
     def create(self, vals_list):
-        if not self.env.su:
-            vals_list = list(vals_list)  # read below, then given to Odoo: a generator would be used up
-            check = self._woow_project_ai_may_target_channel(vals_list)
         attachments = super().create(vals_list)
-        if not self.env.su and check:
-            # as stored: a file goes into a task chat only through an upload or a post (superuser)
-            if any(place[3] for place in attachments._woow_project_ai_places().values()):
-                self._woow_project_ai_refuse_elsewhere('add')
+        if not self.env.su and any(place[3] for place in attachments._woow_project_ai_places().values()):
+            # as stored, whatever put it there: a value, a default, a model name given as bytes or as
+            # XML-RPC's base64 value (Odoo stores the text 'discuss.channel', and its own create check skips
+            # a model name it does not know): a file goes into a task chat only through an upload or a post
+            # (superuser)
+            self._woow_project_ai_refuse_elsewhere('add')
         return attachments
 
     def write(self, vals):

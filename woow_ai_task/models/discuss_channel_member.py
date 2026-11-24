@@ -4,6 +4,7 @@
 from odoo import api, models
 from odoo.exceptions import AccessError
 
+from ..tools.ids import real_ids
 from .discuss_channel import is_sync
 
 
@@ -15,17 +16,27 @@ class DiscussChannelMember(models.Model):
         # add_members, channel_join, /discuss/channel/join, /discuss/settings/mute,
         # invitation links, a direct RPC create, a channel write with member
         # commands: refused for task AI conversations unless this module's own
-        # code adds the member (checked before, and on the created members)
-        if is_sync(self.env):
-            return super().create(vals_list)
-        channel_ids = {vals.get('channel_id') for vals in vals_list if isinstance(vals.get('channel_id'), int)}
-        if channel_ids and self.env['discuss.channel'].sudo().with_context(active_test=False).search_count(
-                [('id', 'in', list(channel_ids)), ('woow_project_ai_task_id', '!=', False)], limit=1):
-            self._woow_project_ai_refuse_member()
+        # code adds the member (checked on the created members as stored).
+        # (res.partner / mail.guest channel_ids, many2many on the member table,
+        # insert no row: Odoo's NOT NULL new_message_separator refuses it.)
         members = super().create(vals_list)
-        if members.sudo().channel_id.filtered('woow_project_ai_task_id'):
-            self._woow_project_ai_refuse_member()
+        if not is_sync(self.env):
+            members._woow_project_ai_check_stored_channels()
         return members
+
+    def _woow_project_ai_check_stored_channels(self):
+        """The created members as stored (one query, whatever type the
+        channel id was given as): none in a task AI conversation."""
+        ids = real_ids(self)
+        if not ids:
+            return
+        self.flush_recordset(['channel_id'])
+        self.env.cr.execute("""
+            SELECT 1 FROM discuss_channel_member m
+              JOIN discuss_channel c ON c.id = m.channel_id AND c.woow_project_ai_task_id IS NOT NULL
+             WHERE m.id = ANY(%s) LIMIT 1""", [ids])
+        if self.env.cr.fetchone():
+            self._woow_project_ai_refuse_member()
 
     def _woow_project_ai_notify_settings(self):
         """Tell the member's open clients their notification settings (as

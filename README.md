@@ -211,8 +211,10 @@ the module's tables are missing can still be neutralized.
   never deleted through a message elsewhere, never put in a letter, and a
   task chat message carries only files of the chat its author uploaded (the
   AI's replies carry the module's files); no sub-channel is made of a task
-  chat or from one of its messages; outside superuser no file is created in
-  a task chat directly, no message is created there other than by posting
+  chat or from one of its messages; nobody but the module joins a task chat
+  (member rows); outside superuser no file is created in a task chat
+  directly (a model name given as bytes or as XML-RPC base64, or in a
+  default, too), no message is created there other than by posting
   it, nobody changes or deletes another person's file (system
   administrators excepted), edits or empties another person's message, or
   changes another person's link previews.

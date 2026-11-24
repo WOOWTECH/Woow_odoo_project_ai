@@ -8,10 +8,11 @@ parent_body run in the coexistence database (skipped elsewhere)."""
 
 import base64
 import json
+import xmlrpc.client
 from unittest.mock import patch
 
 from odoo import Command
-from odoo.exceptions import AccessError
+from odoo.exceptions import AccessError, MissingError
 from odoo.tests.common import HttpCase, JsonRpcException, TransactionCase, new_test_user, tagged
 from odoo.tools import mute_logger
 
@@ -455,6 +456,97 @@ class TestDelta2Review(Delta2Helpers, AiTaskFixtures, TransactionCase):
 
             # (in this Odoo build the nested default gives no content to a reader either)
             self.assertNotIn(content, nested_letter(self.employee))
+
+    # --- follow-up (own check of the stored-row design): joins and file places, whatever the value ---
+
+    def test_followup_member_channel_any_id(self):
+        """A member plants someone else (an employee without Project rights, a
+        customer) in the internal chat: refused on the member rows as stored.
+        Odoo's own member create refuses a float id (browse) and a string id
+        (it cannot read the channel) before that."""
+        internal = self.open_tab(self.staff, 'internal')
+        Member = self.env['discuss.channel.member'].with_user(self.staff)
+        planted = self.employee.partner_id | self.customer.partner_id
+        for partner in planted:
+            with self.subTest(partner=partner.name):
+                self.refused(lambda: Member.create({'channel_id': internal.id, 'partner_id': partner.id}))
+            for channel_id in (internal.id + 0.0, str(internal.id)):
+                with self.subTest(channel_id=repr(channel_id), partner=partner.name):
+                    self.env.flush_all()
+                    self.env.invalidate_all()
+                    with self.assertRaises(Exception) as caught, self.env.cr.savepoint():
+                        Member.create({'channel_id': channel_id, 'partner_id': partner.id})
+                    self.assertIsInstance(caught.exception, (TypeError, ValueError, AccessError, MissingError))
+        self.assertFalse(self.env['discuss.channel.member'].search(
+            [('channel_id', '=', internal.id), ('partner_id', 'in', planted.ids)]))
+        # an ordinary group chat: as before
+        group = self.env['discuss.channel'].with_user(self.staff).create({'name': 'team', 'channel_type': 'group'})
+        Member.create({'channel_id': group.id, 'partner_id': self.employee.partner_id.id})
+        self.assertIn(self.employee.partner_id, group.sudo().channel_member_ids.partner_id)
+
+    def test_followup_partner_channel_link(self):
+        """res.partner.channel_ids is a many2many on the member table: its
+        link inserts the row without the member model. Odoo's NOT NULL
+        new_message_separator refuses that row, superuser included."""
+        internal = self.open_tab(self.staff, 'internal')
+        for link in (internal.id, internal.id + 0.0):
+            with self.subTest(link=repr(link)):
+                self.env.flush_all()
+                self.env.invalidate_all()
+                with self.assertRaises(Exception), self.env.cr.savepoint(), mute_logger('odoo.sql_db'):
+                    self.employee.partner_id.sudo().write({'channel_ids': [Command.link(link)]})
+                    self.env.flush_all()
+        self.assertFalse(self.env['discuss.channel.member'].search(
+            [('channel_id', '=', internal.id), ('partner_id', '=', self.employee.partner_id.id)]))
+
+    def test_followup_file_model_any_value(self):
+        """A file put straight into a task chat with res_model as bytes, or as
+        XML-RPC's base64 value in a default (Odoo stores the text
+        'discuss.channel'; its own create check skips a model name it does not
+        know, and checks nothing when res_id comes from a default). XML-RPC's
+        base64 value in the values themselves fails in Odoo's create
+        (unhashable)."""
+        chat = self.open_tab(self.customer, 'customer')
+        self.open_tab(self.staff, 'customer')
+        Attachment = self.env['ir.attachment'].with_user(self.staff)
+        base64_name = xmlrpc.client.Binary(b'discuss.channel')  # what XML-RPC gives for a <base64> value
+        cases = {
+            'bytes': (Attachment, {'res_model': b'discuss.channel', 'res_id': chat.id}),
+            'bytes, id by default': (Attachment.with_context(default_res_id=chat.id),
+                                     {'res_model': b'discuss.channel'}),
+            'XML-RPC base64 default': (Attachment.with_context(default_res_model=base64_name,
+                                                               default_res_id=chat.id), {}),
+            'bytes default': (Attachment.with_context(default_res_model=b'discuss.channel',
+                                                      default_res_id=chat.id), {}),
+        }
+        for name, (model, vals) in cases.items():
+            with self.subTest(name):
+                self.refused(lambda: model.create(dict(vals, name='planted.pdf', raw=TINY_PDF)))
+        self.assertFalse(self.env['ir.attachment'].search(
+            [('res_model', '=', 'discuss.channel'), ('res_id', '=', chat.id), ('name', '=', 'planted.pdf')]))
+        # ordinary files: as before
+        mine = Attachment.create({'name': 'mine.pdf', 'raw': TINY_PDF, 'res_model': 'project.task',
+                                  'res_id': self.task.id})
+        self.assertEqual((mine.sudo().res_model, mine.sudo().res_id), ('project.task', self.task.id))
+
+    def test_followup_task_alert_default_any_id(self):
+        """A task's AI To-Do is set by the task only: an int default is
+        refused (the cache holds the stored value); Odoo's default_get turns
+        a float or a string id into False, so such a task has none."""
+        activity = self.task.activity_schedule('mail.mail_activity_data_todo', summary='Not yours',
+                                               user_id=self.staff2.id)
+        Task = self.env['project.task'].with_user(self.staff)
+        self.refused(lambda: Task.with_context(default_woow_project_ai_alert_activity_id=activity.id).create(
+            {'name': 'planted', 'project_id': self.project.id}))
+        for value in (activity.id + 0.0, str(activity.id)):
+            with self.subTest(value=repr(value)):
+                # (a context equal to the int one, 1.0 == 1, would give back that environment)
+                task = Task.with_context(default_woow_project_ai_alert_activity_id=value, case=repr(value)).create(
+                    {'name': 'plain', 'project_id': self.project.id})
+                self.env.flush_all()
+                self.env.cr.execute('SELECT woow_project_ai_alert_activity_id FROM project_task WHERE id = %s',
+                                    [task.id])
+                self.assertIsNone(self.env.cr.fetchone()[0])
 
 
 @tagged('post_install', '-at_install', 'woow_ai_task')

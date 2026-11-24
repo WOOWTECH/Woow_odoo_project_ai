@@ -63,10 +63,11 @@
   - **訊息的檔案**：任務對話的檔案不能放在別處的訊息（superuser 也一樣：Odoo 的發言路由以 superuser 執行，正是繞過的地方）；任務對話的訊息只能帶這個對話裡、由訊息作者上傳的檔案（例外：AI 的回覆，作者是 AI 助理、檔案由本模組以 superuser 建立）。
   - **訊息的位置**：非 superuser 時，訊息只能經由對話自己的 `message_post` 建立在任務對話（或移進去）；例外 superuser：Odoo 自己會在頻道記錄加入、離開、釘選。
   - **子頻道**：`parent_channel_id` 不能是任務對話、`from_message_id` 不能是任務對話的訊息（superuser 也一樣：任務對話沒有討論串；Odoo 自己的限制讀快取，字串 id 時是空的）。
-  - **檔案的位置**：任務對話檔案的 `res_model`／`res_id`／`res_field` 永遠不變（所有人）；非 superuser 不能直接在任務對話建立或移入檔案（上傳以 superuser 執行；這也擋住用 `res_field` 改對話頭像、在封存任務的對話加檔案）；只有上傳的人能改或刪（系統管理員除外：批次刪除、`force_storage`）；id 依 SQL 的方式換成整數，其他型別在非 superuser 時拒絕。
+  - **檔案的位置**：任務對話檔案的 `res_model`／`res_id`／`res_field` 永遠不變（所有人）；非 superuser 不能直接在任務對話建立或移入檔案（上傳以 superuser 執行；這也擋住用 `res_field` 改對話頭像、在封存任務的對話加檔案；模型名稱用 bytes 或 XML-RPC 的 base64 值給、或放在 default 裡也一樣：Odoo 存成文字 `discuss.channel`，它自己的建立檢查卻跳過不認得的模型名稱）；只有上傳的人能改或刪（系統管理員除外：批次刪除、`force_storage`）；id 依 SQL 的方式換成整數，其他型別在非 superuser 時拒絕。
   - **外寄郵件**（`mail.mail`，委派給訊息、由排程以 superuser 寄出）：非 superuser 只能連到自己讀得到的任務對話訊息（例外：Odoo 自己的通知信）。
   - **郵寄信件**（`snailmail.letter`，相關欄位以 sudo 讀檔案、由排程寄出）：永遠不能帶任務對話的檔案（所有人）——橋接模組 `woow_ai_task_snailmail`。
   - **連結預覽**：任務對話訊息的連結預覽只有作者能建立、修改、刪除或隱藏（Odoo 讓存取權限管理員動任何預覽）。
+  - **成員**：建立的成員列依存進資料庫的 `channel_id` 檢查，不能在任務對話（本模組自己的同步除外）。（Odoo 自己的成員建立遇到浮點數或字串的頻道 id 本來就失敗；`res.partner`／`mail.guest` 的 `channel_ids` 是成員表上的 many2many，寫不進列：Odoo 的 `new_message_separator` 是 NOT NULL。）
 - **能讀一切的角色**：系統管理員（程式、規則）、郵件範本編輯者（範本可以呼叫 `.sudo()`；不呼叫時 `object.body` 一樣經過 `fetch` 的檢查）；存取權限管理員可以給自己任何權限。
 - **讀取的限制**：同步之前，失去權限的人還會出現在成員名單，但已經**讀不到任何東西**：一條全域 record rule（`rule_discuss_channel_woow_project_ai`）只讓「現在讀得到任務的人」讀任務對話（內部對話只限有專案權限、也讀得到專案的內部使用者），依目前使用者計算。其他頻道完全不受影響：規則對它們永遠成立（公開使用者、訪客、portal、員工，不管公司設定如何；任務規則出錯時也只是任務對話讀不到）。
 - **通知**：一則訊息的通知（成員的 web push、被 @ 的人的收件匣／email）只送給現在讀得到任務的人。

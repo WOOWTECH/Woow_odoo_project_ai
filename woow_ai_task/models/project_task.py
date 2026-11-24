@@ -108,7 +108,8 @@ class ProjectTask(models.Model):
                                          'itself.'))
         tasks = super().create(vals_list)
         if not is_sync(self.env) and tasks.sudo().filtered('woow_project_ai_alert_activity_id'):
-            # set by a default_* context key
+            # set by a default (context, ir.default): the cache holds the stored value here, as Odoo's
+            # default_get turns a many2one default into an int or False (a float or a string id gives False)
             raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the task '
                                          'itself.'))
         return tasks
