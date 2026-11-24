@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Regression tests of the PR #4 review (review-pr4/REVIEW.md, item numbers in
 the docstrings): the findings about woow_ai_task, fixed in the standalone
-module."""
+module; and of the independent review of this module (F numbers)."""
 
+import json
 from datetime import datetime
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ from odoo.tools import mute_logger
 
 from odoo.addons.woow_ai_task.models.discuss_channel import with_sync
 
-from .common import BACKEND_POST, AiTaskFixtures, http_response
+from .common import BACKEND_POST, AiTaskFixtures, http_response, openai_ok
 
 GUARD = 'managed by the task itself'
 
@@ -362,6 +363,14 @@ class TestReviewMinors(AiTaskFixtures, TransactionCase):
         with self.assertRaises(AccessError):
             self.open_tab(self.employee, 'internal')
         self.assertFalse(self.env['discuss.channel'].with_user(self.employee).search([('id', '=', internal.id)]))
+        # (independent review F8) the task form shows the internal page to Project users only
+
+        def form_arch(user):
+            return self.env['project.task'].with_user(user).get_views([(False, 'form')])['views']['form']['arch']
+
+        self.assertNotIn('woow_project_ai_internal_chat', form_arch(self.employee))
+        self.assertIn('woow_project_ai_customer_chat', form_arch(self.employee))
+        self.assertIn('woow_project_ai_internal_chat', form_arch(self.staff2))
         # a project user who loses the Project rights leaves the internal chat
         self.staff.write({'groups_id': [Command.unlink(self.env.ref('project.group_project_user').id)]})
         self.assertFalse(self.staff.has_group('project.group_project_user'))
@@ -374,3 +383,156 @@ class TestReviewMinors(AiTaskFixtures, TransactionCase):
                          'AI Replies This Month (Customer Chats)')
         self.assertEqual(fields_['woow_project_ai_usage_internal_month'].string,
                          'AI Replies This Month (Internal Chats)')
+
+
+@tagged('post_install', '-at_install', 'woow_ai_task')
+class TestIndependentReview(AiTaskFixtures, TransactionCase):
+    """Findings of the independent review of the standalone module (F1, F3,
+    F5, F10, F11); F6 in test_media / test_job, item 33 in test_context."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.setup_ai_task()
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(type(self.env['woow.project.ai.job']), '_start_after_commit')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def statements(self, function):
+        """The SQL statements `function` runs."""
+        seen = []
+        execute = type(self.env.cr).execute
+
+        def spy(cr, query, *args, **kwargs):
+            seen.append(str(getattr(query, 'code', query)).strip())
+            return execute(cr, query, *args, **kwargs)
+
+        with patch.object(type(self.env.cr), 'execute', spy):
+            function()
+        return seen
+
+    def test_first_open_writes_the_task_row_before_creating(self):
+        # F1: of two first openers at once, the second must fail with a serialization failure (Odoo retries it,
+        # and it joins the first one's chat): only a write of the task row gives that in REPEATABLE READ (a
+        # plain row lock lets it create a second chat, refused by the unique constraint, not retried)
+        seen = self.statements(lambda: self.open_tab(self.staff, 'internal'))
+        locks = [i for i, query in enumerate(seen)
+                 if query.startswith('UPDATE project_task SET write_date = write_date WHERE id')]
+        creates = [i for i, query in enumerate(seen) if query.startswith('INSERT INTO "discuss_channel"')]
+        self.assertTrue(locks and creates, seen[-30:])
+        self.assertLess(locks[0], creates[0])
+        # an existing chat is joined without writing the task
+        seen = self.statements(lambda: self.open_tab(self.staff2, 'internal'))
+        self.assertFalse([query for query in seen if query.startswith('UPDATE project_task')])
+
+    def test_no_log_note_in_the_customer_chat(self):
+        # F3: the customers read everything in the customer chat: no log note gets in, and the customer AI
+        # never sees one
+        chat = self.open_tab(self.customer, 'customer')
+        self.open_tab(self.staff, 'customer')
+        for author in (self.staff, self.customer):
+            for extra in ({'subtype_xmlid': 'mail.mt_note'},
+                          {'subtype_xmlid': 'mail.mt_comment', 'is_internal': True}):
+                with self.subTest(author=author.name, extra=extra), self.assertRaises(AccessError) as error:
+                    chat.with_user(author).sudo().message_post(body='a note', message_type='comment', **extra)
+                self.assertIn('internal notes', str(error.exception))
+        with self.assertRaises(AccessError), self.env.cr.savepoint():
+            self.env['mail.message'].with_user(self.customer).create({
+                'model': 'discuss.channel', 'res_id': chat.id, 'body': 'a direct note', 'message_type': 'comment',
+                'subtype_id': self.env.ref('mail.mt_note').id})
+        self.assertFalse(self.env['mail.message'].sudo().search(
+            [('model', '=', 'discuss.channel'), ('res_id', '=', chat.id), ('body', 'ilike', 'note')]))
+        # a post without a subtype (Odoo's default would be a log note): a message the customers read
+        plain = chat.with_user(self.customer).sudo().message_post(body='a plain post', message_type='comment')
+        self.assertEqual(plain.subtype_id, self.env.ref('mail.mt_comment'))
+        self.assertTrue(self.env['mail.message'].with_user(self.customer).search([('id', '=', plain.id)]))
+        # a note that got in some other way (here: created as superuser) never reaches the customer AI
+        self.env['mail.message'].sudo().create({
+            'model': 'discuss.channel', 'res_id': chat.id, 'body': 'SECRET STAFF NOTE', 'message_type': 'comment',
+            'subtype_id': self.env.ref('mail.mt_note').id, 'author_id': self.staff.partner_id.id})
+        self.post(chat, self.customer, 'what is new?')
+        with patch(BACKEND_POST, return_value=openai_ok('ok')) as post:
+            self.run_due(chat)
+        dump = json.dumps(self.sent(post), ensure_ascii=False)
+        self.assertNotIn('SECRET STAFF NOTE', dump)
+        self.assertIn('what is new?', dump)
+        # the internal chat (colleagues only) keeps Odoo's behaviour
+        internal = self.open_tab(self.staff, 'internal')
+        note = internal.with_user(self.staff).sudo().message_post(body='internal note', message_type='comment',
+                                                                  subtype_xmlid='mail.mt_note')
+        self.assertTrue(note.subtype_id.internal)
+
+    def test_ai_messages_reach_only_members_with_access(self):
+        # F5: a member who lost the access in a way no trigger saw is removed before an AI reply or a push,
+        # as before a person's post
+        chat = self.open_tab(self.customer, 'customer')
+        self.open_tab(self.customer2, 'customer')
+        self.env.flush_all()
+        self.env.cr.execute("DELETE FROM mail_followers WHERE res_model = 'project.task' AND res_id = %s "
+                            "AND partner_id = %s", (self.task.id, self.customer.partner_id.id))
+        self.env.invalidate_all()
+        self.assertFalse(self.task.with_user(self.customer).has_access('read'))
+        self.assertIn(self.customer.partner_id, self.members(chat), 'no trigger saw it')
+        self.customer_ai.sudo()._post_text(chat, 'an AI message')
+        self.assertNotIn(self.customer.partner_id, self.members(chat))
+        self.assertIn(self.customer2.partner_id, self.members(chat))
+
+    def test_new_followers_do_not_resync(self):
+        # F10: a new follower only gains access: no sync of the task's chats (an unsubscription still syncs)
+        self.open_tab(self.customer, 'customer')
+        Channel = type(self.env['discuss.channel'])
+        with patch.object(Channel, '_woow_project_ai_sync_tasks', autospec=True) as sync_tasks, \
+                patch.object(Channel, '_woow_project_ai_sync_projects', autospec=True) as sync_projects:
+            self.task.message_subscribe(partner_ids=self.outsider.partner_id.ids)
+            self.project.message_subscribe(partner_ids=self.outsider.partner_id.ids)
+            sync_tasks.assert_not_called()
+            sync_projects.assert_not_called()
+            self.task.message_unsubscribe(partner_ids=self.outsider.partner_id.ids)
+            self.project.message_unsubscribe(partner_ids=self.outsider.partner_id.ids)
+            self.assertTrue(sync_tasks.called)
+            self.assertTrue(sync_projects.called)
+
+    def test_usage_rows_carry_the_project(self):
+        # F11: the usage list groups by project (a relation, not the scope's raw id)
+        chat = self.open_tab(self.customer, 'customer')
+        self.post(chat, self.customer, 'hello?')
+        with patch(BACKEND_POST, return_value=openai_ok('hi')):
+            self.run_due(chat)
+        Usage = self.env['woow.project.ai.usage.month']
+        rows = Usage.search([('scope_model', '=', 'project.project'), ('scope_res_id', '=', self.project.id)])
+        self.assertTrue(rows)
+        self.assertEqual(rows.project_id, self.project)
+        groups = Usage.read_group([('id', 'in', rows.ids)], ['replies_ok:sum'], ['project_id'])
+        self.assertEqual([group['project_id'] for group in groups], [(self.project.id, self.project.display_name)])
+
+
+@tagged('post_install', '-at_install', 'woow_ai_task')
+class TestIndependentReviewHttp(AiTaskFixtures, HttpCase):
+    """F7: the edit route runs the post check (the user's own environment)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.setup_ai_task()
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(type(self.env['woow.project.ai.job']), '_start_after_commit')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_archived_task_messages_stay_as_they_are(self):
+        chat = self.open_tab(self.staff, 'internal')
+        message = self.post(chat, self.staff, 'before archiving')
+        self.task.active = False
+        self.authenticate('aitask_staff', 'aitask_staff')
+        for body in ('edited after archiving', ''):  # an empty body without files: a deletion
+            with self.subTest(body=body), mute_logger('odoo.http'), self.assertRaises(JsonRpcException):
+                self.make_jsonrpc_request('/mail/message/update_content', {
+                    'message_id': message.id, 'body': body, 'attachment_ids': []})
+        message.invalidate_recordset()
+        self.assertIn('before archiving', message.body)
+        # (the backend tab of an archived task shows no message actions: static/src/backend/task_chat.xml)

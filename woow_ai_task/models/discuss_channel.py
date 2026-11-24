@@ -374,6 +374,10 @@ class DiscussChannel(models.Model):
     @api.returns('mail.message', lambda value: value.id)
     def message_post(self, *, message_type='notification', **kwargs):
         if self._woow_project_ai_is_task_chat():
+            if message_type == COMMENT and not kwargs.get('subtype_id') and not kwargs.get('subtype_xmlid'):
+                # a message of a task chat is for its members: never a log note (Odoo's default subtype,
+                # which portal users never read)
+                kwargs['subtype_xmlid'] = 'mail.mt_comment'
             self._woow_project_ai_check_post(message_type, kwargs)
             if kwargs.get('partner_ids'):
                 # a mention notifies (and lets read the message) only people who may be in this chat
@@ -443,7 +447,14 @@ class DiscussChannel(models.Model):
         else:
             raise AccessError(self.env._('Guests cannot write in task AI conversations.'))
         if self.env.su and author and author.id in self._woow_project_ai_bot_partner_ids():
+            if sync:
+                # an AI reply or a push: the members who lost the access meanwhile go first, as for a person's
+                # post, so the message never reaches them (nor their open pages)
+                channel._woow_project_ai_sync()
             return
+        if channel.woow_project_ai_tab == TAB_CUSTOMER and self._woow_project_ai_hidden_from_customers(values):
+            raise AccessError(self.env._('The customers read everything in a customer AI chat: internal notes '
+                                         'cannot be posted there.'))
         if not channel.woow_project_ai_task_id.active:
             raise UserError(self.env._('This task is archived: its AI conversations can only be read.'))
         member = channel.channel_member_ids.filtered(lambda m: author and m.partner_id == author)
@@ -457,6 +468,28 @@ class DiscussChannel(models.Model):
         if sync:
             # the others who lost the access meanwhile (no trigger saw it): out before the message reaches them
             channel._woow_project_ai_sync()
+
+    def _woow_project_ai_hidden_from_customers(self, values):
+        """Whether a comment with these values (``is_internal``,
+        ``subtype_id`` / ``subtype_xmlid``, as given to message_post or read
+        from a created message) is one portal users never read: Odoo shows
+        them only non-internal messages with a public subtype
+        (mail.message._get_search_domain_share). False when the values say
+        nothing about it (an edit)."""
+        if not {'is_internal', 'subtype_id', 'subtype_xmlid'} & set(values):
+            return False
+        if values.get('is_internal'):
+            return True
+        Subtype = self.env['mail.message.subtype'].sudo()
+        if values.get('subtype_id'):
+            subtype = Subtype.browse(values['subtype_id']).exists()
+        elif values.get('subtype_xmlid'):
+            xmlid = values['subtype_xmlid']
+            subtype = self.env.ref(xmlid if '.' in xmlid else 'mail.%s' % xmlid, raise_if_not_found=False)
+            subtype = subtype.sudo() if subtype and subtype._name == 'mail.message.subtype' else Subtype
+        else:
+            subtype = Subtype  # a message without subtype
+        return not subtype or subtype.internal
 
     def _notify_get_recipients(self, message, msg_vals=False, **kwargs):
         """Task chats: the notifications of a message (web push of the
@@ -806,6 +839,9 @@ class DiscussChannel(models.Model):
             ('res_id', '=', self.id),
             ('message_type', 'in', ('comment', 'email')),
         ]
+        if self.sudo().woow_project_ai_tab == TAB_CUSTOMER:
+            # only what the customers read themselves (no log note, whatever way it came in)
+            domain += self.env['mail.message']._get_search_domain_share()
         Message = self.env['mail.message'].sudo()
         if not until:
             return Message.search(domain, order='id desc', limit=limit).sorted('id')
@@ -900,7 +936,14 @@ class DiscussChannel(models.Model):
             parts.append('%s\n%s' % (BRIEF_HEADER, brief))
         requester = channel._woow_project_ai_requester_user(history)
         if requester:
-            parts.append(task._woow_project_ai_context_block(requester, tab))
+            audience = None
+            if tab == TAB_INTERNAL:
+                # every member reads the answer: related records only if all of them can read them
+                bots = set(channel._woow_project_ai_bot_partner_ids())
+                people = channel.channel_member_ids.partner_id.filtered(lambda partner: partner.id not in bots)
+                audience = people.with_context(active_test=False).user_ids.filtered(
+                    lambda member: member.active and member._is_internal()) - requester
+            parts.append(task._woow_project_ai_context_block(requester, tab, audience))
         if tab == TAB_CUSTOMER:
             parts.append(LABEL_SYSTEM_NOTE)
             if any(entry.get('woow_project_ai_staff') for entry in history or []):

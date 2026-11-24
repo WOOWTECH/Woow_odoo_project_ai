@@ -355,8 +355,8 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
         # a colleague stays a colleague (the AI pauses)...
         self.http_post(customer_chat, 'a colleague writes', context=forged)
         self.assertTrue(customer_chat.sudo().woow_project_ai_paused_until, 'a colleague pauses the AI')
-        # ...nobody is removed as a former bot by a sync...
-        self.call_kw('project.task', 'message_subscribe', [self.task.ids],
+        # ...nobody is removed as a former bot by a sync (an unsubscription syncs the task's chats)...
+        self.call_kw('project.task', 'message_unsubscribe', [self.task.ids],
                      {'partner_ids': self.staff2.partner_id.ids}, context=forged)
         self.assertIn(self.customer2.partner_id, self.members(customer_chat))
         # ...and an archived task stays read only
@@ -427,15 +427,24 @@ class TestMembershipSecurity(AiTaskFixtures, HttpCase):
             # Odoo pushes only to users with Discuss settings (made when they first open the web client)
             self.env['res.users.settings']._find_or_create_for_user(user)
         self.lose_access_silently(self.customer2)
+        # still listed (no trigger saw it), but left out of the notifications of any message
+        self.assertIn(self.customer2.partner_id, self.members(customer_chat), 'still listed')
+        welcome = self.bot_messages(customer_chat)[:1]
+        recipients = [recipient['id'] for recipient in customer_chat.sudo()._notify_get_recipients(welcome, {})]
+        self.assertIn(self.customer.partner_id.id, recipients)
+        self.assertNotIn(self.customer2.partner_id.id, recipients)
         with patch.object(Channel, '_notify_thread_by_web_push', autospec=True, side_effect=capture):
-            # the AI's answer (no sync at bot posts): not pushed to the member who lost the access
+            # the AI's answer first removes the member who lost the access (independent review F5): not pushed
             self.customer_ai._post_text(customer_chat, 'AI answer')
         self.assertIn(self.customer.partner_id.id, pushed)
         self.assertNotIn(self.customer2.partner_id.id, pushed)
-        self.assertIn(self.customer2.partner_id, self.members(customer_chat), 'still listed')
-        # a person's post removes them before it reaches them
-        self.post(customer_chat, self.customer, 'next question')
         self.assertNotIn(self.customer2.partner_id, self.members(customer_chat))
+        # a person's post does the same (here a colleague's)
+        self.open_tab(self.staff, 'customer')
+        self.lose_access_silently(self.customer)
+        self.assertIn(self.customer.partner_id, self.members(customer_chat), 'still listed')
+        self.post(customer_chat, self.staff, 'next answer')
+        self.assertNotIn(self.customer.partner_id, self.members(customer_chat))
         # a customer mentioned in the internal chat is not notified (no email with internal words)
         message = internal.with_user(self.staff).sudo().message_post(
             body='internal: @Customer Carl margin 30%', message_type='comment', subtype_xmlid='mail.mt_comment',

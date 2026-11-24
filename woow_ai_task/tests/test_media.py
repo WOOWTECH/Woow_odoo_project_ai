@@ -91,6 +91,22 @@ class TestMedia(BaseCase):
                 media.download('https://files.example.com/a.png', self.domains, 1000)
         self.assertTrue(big.close.called)
 
+    def test_download_deadline(self):
+        # (independent review F6) a host that trickles its bytes: the download ends at the deadline
+        with patch(MEDIA_GET) as get, patch.object(media, '_now', return_value=100.0):
+            with self.assertRaises(media.DownloadRefused) as error:
+                media.download('https://files.example.com/a.png', self.domains, 1000, deadline=99.0)
+        get.assert_not_called()
+        self.assertIn('too slow', str(error.exception))
+        slow = http_response(200, chunks=[b'x' * 10, b'x' * 10, b'x' * 10])
+        clock = iter([0.0, 1.0, 50.0, 100.0])
+        with patch(MEDIA_GET, return_value=slow) as get, patch.object(media, '_now', lambda: next(clock)):
+            with self.assertRaises(media.DownloadRefused) as error:
+                media.download('https://files.example.com/a.png', self.domains, 1000, deadline=40.0)
+        self.assertIn('too slow', str(error.exception))
+        self.assertEqual(get.call_args.kwargs['timeout'], (10, 40.0), 'no read may wait past the deadline')
+        self.assertTrue(slow.close.called)
+
     def test_download_not_allowlisted(self):
         with patch(MEDIA_GET) as get:
             with self.assertRaises(media.DownloadRefused):

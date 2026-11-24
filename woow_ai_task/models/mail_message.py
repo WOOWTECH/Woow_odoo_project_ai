@@ -44,7 +44,9 @@ class MailMessage(models.Model):
                     if message.author_guest_id:
                         self._woow_project_ai_refuse()  # shown with the guest's name, whatever the author
                     self.env['discuss.channel'].browse(message.res_id)._woow_project_ai_check_post(
-                        message.message_type, {'author_id': message.author_id.id or False}, sync=False)
+                        message.message_type, {'author_id': message.author_id.id or False,
+                                               'subtype_id': message.subtype_id.id or False,
+                                               'is_internal': message.is_internal}, sync=False)
         return messages
 
     def write(self, vals):

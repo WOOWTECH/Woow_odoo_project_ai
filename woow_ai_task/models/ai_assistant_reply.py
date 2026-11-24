@@ -17,6 +17,7 @@ Ported from woow_ai_contact 18.0.2.0.0 (``ai_contact_reply.py``).
 
 import logging
 import re
+import time
 
 from markupsafe import Markup
 
@@ -29,6 +30,11 @@ from .ai_assistant_backend import strip_think
 _logger = logging.getLogger(__name__)
 
 MAX_FILES_PER_REPLY = 10
+# one reply, all its files together: the downloads end in time (inside the
+# job's margin for downloads and posting, ai_job.WORKER_LIMIT_MARGIN_SECONDS)
+# and stay bounded in memory, whatever the per-file limit
+REPLY_DOWNLOAD_SECONDS = 45
+MAX_REPLY_BYTES = 100 * 1024 * 1024
 
 # ![alt](url) and [text](url) with an optional "title"
 _MD_LINK_RE = re.compile(
@@ -57,12 +63,39 @@ class WoowProjectAiAssistantReply(models.Model):
         self.ensure_one()
         return media.parse_domains(self.sudo().connection_id.download_domains)
 
-    def _fetch_file(self, url, name=None):
-        """Download an allowlisted file -> {'name', 'raw', 'mimetype'}; raises DownloadRefused."""
+    @staticmethod
+    def _reply_budget():
+        """What all the files of one reply may take together: {'deadline', 'bytes'}."""
+        return {'deadline': time.monotonic() + REPLY_DOWNLOAD_SECONDS, 'bytes': MAX_REPLY_BYTES}
+
+    @staticmethod
+    def _budget_bytes(budget, max_bytes):
+        """The size limit of the next file of a reply (raises when nothing is left)."""
+        if budget is None:
+            return max_bytes
+        if budget['bytes'] <= 0:
+            raise media.DownloadRefused('the files of this reply are too large together')
+        return min(max_bytes, budget['bytes'])
+
+    def _fetch_file(self, url, name=None, budget=None):
+        """Download an allowlisted file -> {'name', 'raw', 'mimetype'}; raises
+        DownloadRefused. ``budget`` (see _reply_budget): shared by the files of
+        one reply, its bytes are counted down."""
         self.ensure_one()
-        raw, final_url = media.download(url, self._download_domains(), self._max_download_bytes())
+        max_bytes = self._budget_bytes(budget, self._max_download_bytes())
+        raw, final_url = media.download(url, self._download_domains(), max_bytes,
+                                        deadline=budget['deadline'] if budget else None)
+        if budget is not None:
+            budget['bytes'] -= len(raw)
         filename = media.clean_filename(name) if name else media.filename_from_url(final_url)
         return {'name': filename, 'raw': raw, 'mimetype': media.safe_mimetype(raw)}
+
+    def _decode_file(self, data, max_bytes, budget=None):
+        """A base64 file of a reply (counted in ``budget``); raises DownloadRefused."""
+        raw = media.decode_base64(data, self._budget_bytes(budget, max_bytes))
+        if budget is not None:
+            budget['bytes'] -= len(raw)
+        return raw
 
     def _reply_note(self, channel, source, message=None):
         """Short note put in the reply text, in the requester's language
@@ -95,6 +128,7 @@ class WoowProjectAiAssistantReply(models.Model):
         warnings = []
         domains = self._download_domains()
         max_bytes = self._max_download_bytes()
+        budget = self._reply_budget()
 
         def replace_data_uri(match):
             declared = (match.group('type') or match.group('type2') or '').lower()
@@ -106,7 +140,7 @@ class WoowProjectAiAssistantReply(models.Model):
                     reason = 'too many files'
                 else:
                     try:
-                        raw = media.decode_base64(data, max_bytes)
+                        raw = self._decode_file(data, max_bytes, budget)
                     except media.DownloadRefused as e:
                         reason = str(e)
                     else:
@@ -133,7 +167,7 @@ class WoowProjectAiAssistantReply(models.Model):
             if len(files) >= MAX_FILES_PER_REPLY or not media.url_allowed(url, domains):
                 return match.group(0)
             try:
-                file = self._fetch_file(url)
+                file = self._fetch_file(url, budget=budget)
             except media.DownloadRefused as e:
                 _logger.info("Project AI assistant %s: file not attached (%s)", self.id, e)
                 return match.group(0)
@@ -149,7 +183,7 @@ class WoowProjectAiAssistantReply(models.Model):
             name = item.get('name') if isinstance(item.get('name'), str) else None
             if isinstance(item.get('data_base64'), str):
                 try:
-                    raw = media.decode_base64(item['data_base64'], max_bytes)
+                    raw = self._decode_file(item['data_base64'], max_bytes, budget)
                 except media.DownloadRefused as e:
                     _logger.info("Project AI assistant %s: base64 attachment dropped (%s)", self.id, e)
                     continue
@@ -163,7 +197,7 @@ class WoowProjectAiAssistantReply(models.Model):
                 try:
                     if not media.url_allowed(url, domains):
                         raise media.DownloadRefused('domain not allowed')
-                    files.append(self._fetch_file(url, name=name))
+                    files.append(self._fetch_file(url, name=name, budget=budget))
                 except media.DownloadRefused as e:
                     _logger.info("Project AI assistant %s: attachment kept as a link (%s)", self.id, e)
                     extra_links.append('[%s](%s)' % ((name or media.filename_from_url(url)).replace(']', ''), url))

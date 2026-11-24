@@ -185,9 +185,7 @@ class ProjectTask(models.Model):
             raise AccessError(self.env._('You cannot open this AI conversation: you need access to the task.'))
         channel = task._woow_project_ai_tab_channel(tab)
         if not channel:
-            # a concurrent opener that created it meanwhile makes this lock fail
-            # (serialization failure): Odoo retries the request, which then finds it
-            self.env.cr.execute("SELECT id FROM project_task WHERE id = %s FOR NO KEY UPDATE", (task.id,))
+            task._woow_project_ai_lock_for_create()
             channel = task._woow_project_ai_tab_channel(tab)
         created = False
         if not channel:
@@ -203,6 +201,18 @@ class ProjectTask(models.Model):
             if welcome:
                 assistant._post_text(channel, welcome)
         return channel
+
+    def _woow_project_ai_lock_for_create(self):
+        """Before creating a tab's conversation: lock the task row by updating
+        it (a no-op update). Two people opening a tab for the first time at
+        once: the second waits here, then fails with a serialization failure
+        (its snapshot predates the first one's update), and Odoo retries its
+        request, which then finds the conversation and joins it. A plain row
+        lock (SELECT ... FOR UPDATE) does not fail after a commit that only
+        locked the row: the second request would create a second conversation
+        and hit the unique constraint instead (not retried)."""
+        self.ensure_one()
+        self.env.cr.execute("UPDATE project_task SET write_date = write_date WHERE id = %s", (self.id,))
 
     def _woow_project_ai_chat_name(self, tab):
         self.ensure_one()
@@ -241,12 +251,14 @@ class ProjectTask(models.Model):
 
     # --- What the AI gets about the task ---
 
-    def _woow_project_ai_context_block(self, user, tab):
+    def _woow_project_ai_context_block(self, user, tab, audience=None):
         """Short task summary for the AI, read as `user` (with_user, never
         sudo): what they can read themselves. Customer chat: only the fields
         of Odoo's portal readable set of project.task, without the related
-        tasks. At most 8,000 characters; never the chatter or log notes. ''
-        when `user` cannot read the task."""
+        tasks. ``audience`` (res.users: the people who read the answer, the
+        chat's members): of the related records (other tasks, tags, people...)
+        only those every one of them can read too. At most 8,000 characters;
+        never the chatter or log notes. '' when `user` cannot read the task."""
         self.ensure_one()
         if not user:
             return ''
@@ -265,7 +277,7 @@ class ProjectTask(models.Model):
         lines, description = [], ''
         for name in names:
             try:
-                text = task._woow_project_ai_field_text(name)
+                text = task._woow_project_ai_field_text(name, audience)
             except (AccessError, MissingError):
                 continue
             if not text:
@@ -284,10 +296,11 @@ class ProjectTask(models.Model):
                 block += head + description
         return block[:MAX_CONTEXT_CHARS]
 
-    def _woow_project_ai_field_text(self, name):
+    def _woow_project_ai_field_text(self, name, audience=None):
         """One field of this task as text, read with this record's user
         (field access checked; related records filtered by the user's own
-        access, whatever the shared cache holds)."""
+        access, whatever the shared cache holds, and by the access of every
+        user of ``audience``)."""
         self.ensure_one()
         self.check_field_access_rights('read', [name])
         field = self._fields[name]
@@ -297,14 +310,14 @@ class ProjectTask(models.Model):
             # and not left there for others either
             self.invalidate_recordset([name])
             try:
-                records = self[name]._filtered_access('read')
+                records = self._woow_project_ai_shared_with(self[name]._filtered_access('read'), audience)
                 names = records[:MAX_RELATED_NAMES].mapped('display_name')
             finally:
                 self.invalidate_recordset([name])
             return '、'.join(name for name in names if name)
         value = self[name]
         if field.type == 'many2one':
-            return value._filtered_access('read').display_name or ''
+            return self._woow_project_ai_shared_with(value._filtered_access('read'), audience).display_name or ''
         if field.type == 'html':
             return html_to_text(value)
         if field.type == 'datetime':
@@ -314,6 +327,17 @@ class ProjectTask(models.Model):
         if field.type == 'selection':
             return dict(field._description_selection(self.env)).get(value) or ''
         return ' '.join(str(value or '').split())
+
+    def _woow_project_ai_shared_with(self, records, audience):
+        """Those of `records` that every user of `audience` can read too (an
+        answer is read by all the members of the chat)."""
+        for member in audience or ():
+            if not records:
+                break
+            readable = records.with_user(member).with_context(
+                allowed_company_ids=self._woow_project_ai_company_ids(member))._filtered_access('read')
+            records = records.browse(readable.ids)
+        return records
 
     # --- The To-Do of the people in charge ---
 
@@ -376,11 +400,7 @@ class ProjectTask(models.Model):
             self.env['discuss.channel']._woow_project_ai_sync_tasks(self | moved)
         return res
 
-    def message_subscribe(self, partner_ids=None, subtype_ids=None):
-        res = super().message_subscribe(partner_ids=partner_ids, subtype_ids=subtype_ids)
-        if partner_ids:
-            self.env['discuss.channel']._woow_project_ai_sync_tasks(self)
-        return res
+    # (no sync on message_subscribe: a new follower only gains access, nobody loses it)
 
     def message_unsubscribe(self, partner_ids=None):
         res = super().message_unsubscribe(partner_ids=partner_ids)

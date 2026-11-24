@@ -46,6 +46,10 @@ class WoowProjectAiUsageMonth(models.Model):
     scope_model = fields.Char(string='Scope Model', readonly=True)
     scope_res_id = fields.Many2oneReference(string='Scope Record', model_field='scope_model', readonly=True)
     scope_name = fields.Char(string='Scope', compute='_compute_scope_name')
+    project_id = fields.Many2one('project.project', string='Project', readonly=True, index=True,
+                                 ondelete='set null',
+                                 help='The project of the task chats (set with the row; empty once the project is '
+                                      'deleted, the scope keeps its id).')
     replies_ok = fields.Integer(string='Replies', readonly=True,
                                 help='Replies of the backend posted in the conversation.')
     replies_failed = fields.Integer(string='Failed Replies', readonly=True,
@@ -86,13 +90,15 @@ class WoowProjectAiUsageMonth(models.Model):
         concurrent replies: the conflicting row is locked and incremented)."""
         if not assistant or not connection:
             return
+        # grouped by in the usage list (the scope itself is a reference, not a relation)
+        project = self._woow_project_ai_scope_project(scope_model, scope_res_id)
         self.env.cr.execute("""
             INSERT INTO woow_project_ai_usage_month
-                   (assistant_id, connection_id, surface_type, surface_tab, scope_model, scope_res_id, month,
-                    replies_ok, replies_failed, prompt_tokens, completion_tokens,
+                   (assistant_id, connection_id, surface_type, surface_tab, scope_model, scope_res_id, project_id,
+                    month, replies_ok, replies_failed, prompt_tokens, completion_tokens,
                     create_uid, create_date, write_uid, write_date)
             VALUES (%(assistant)s, %(connection)s, %(surface)s, %(tab)s, %(scope_model)s, %(scope_res_id)s,
-                    date_trunc('month', statement_timestamp() AT TIME ZONE 'UTC')::date,
+                    %(project)s, date_trunc('month', statement_timestamp() AT TIME ZONE 'UTC')::date,
                     %(ok)s, %(failed)s, %(prompt)s, %(completion)s,
                     %(uid)s, statement_timestamp() AT TIME ZONE 'UTC',
                     %(uid)s, statement_timestamp() AT TIME ZONE 'UTC')
@@ -103,6 +109,7 @@ class WoowProjectAiUsageMonth(models.Model):
                           prompt_tokens = woow_project_ai_usage_month.prompt_tokens + EXCLUDED.prompt_tokens,
                           completion_tokens = woow_project_ai_usage_month.completion_tokens
                                               + EXCLUDED.completion_tokens,
+                          project_id = COALESCE(EXCLUDED.project_id, woow_project_ai_usage_month.project_id),
                           write_uid = EXCLUDED.write_uid, write_date = EXCLUDED.write_date
         """, {
             'assistant': assistant.id,
@@ -111,6 +118,7 @@ class WoowProjectAiUsageMonth(models.Model):
             'tab': surface_tab or None,
             'scope_model': scope_model or None,
             'scope_res_id': scope_res_id or None,
+            'project': project.id or None,
             'ok': 1 if ok else 0,
             'failed': 0 if ok else 1,
             'prompt': max(0, int(prompt_tokens or 0)),
@@ -118,6 +126,12 @@ class WoowProjectAiUsageMonth(models.Model):
             'uid': self.env.uid,
         })
         self.invalidate_model()
+
+    @api.model
+    def _woow_project_ai_scope_project(self, scope_model, scope_res_id):
+        if scope_model != 'project.project' or not scope_res_id:
+            return self.env['project.project']
+        return self.env['project.project'].sudo().with_context(active_test=False).browse(scope_res_id).exists()
 
     @api.model
     def _add_for_channel(self, channel, assistant, connection=None, ok=True, prompt_tokens=0, completion_tokens=0):

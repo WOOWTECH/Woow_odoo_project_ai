@@ -29,13 +29,15 @@ modules (woow_ai_contact) without sharing anything with them.
   portal task page; colleagues join muted). Membership follows the task
   access: only this module adds members, synced on every access-relevant
   change and every hour; a post by someone who lost the access is refused at
-  once; members who lost the access read nothing any more, even before the
-  sync. A tab's chat is found through the chat's own link only
+  once, and every message (a person's, an AI reply, a push) first removes
+  the members who lost the access; they read nothing any more, even before
+  the sync. A tab's chat is found through the chat's own link only
 * Every message is answered (no @AI): a burst of one person gets one answer,
   two people asking at once each get theirs. A colleague's message in the
   customer chat pauses the AI (and unmutes that colleague); an n8n handoff
   pauses it, and a customer message the AI cannot answer is flagged: one
-  To-Do for the assignees. The customer chat never gets the internal brief
+  To-Do for the assignees. The customer chat never gets the internal brief,
+  and takes no log note (its customers read everything in it)
 * The AI gets the assistant's prompt, the project text of its tab and a short
   task summary read with the asker's own access rights (customer tab: the
   portal-readable task fields only); never the chatter

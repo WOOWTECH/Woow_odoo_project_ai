@@ -28,11 +28,12 @@
                 <field name="assistant_id"/>
                 <field name="connection_id"/>
                 <field name="surface_tab"/>
+                <field name="project_id"/>
                 <group expand="0" string="Group By">
                     <filter name="group_month" string="Month" context="{'group_by': 'month:month'}"/>
                     <filter name="group_assistant" string="AI Assistant" context="{'group_by': 'assistant_id'}"/>
                     <filter name="group_connection" string="AI Connection" context="{'group_by': 'connection_id'}"/>
-                    <filter name="group_scope" string="Project" context="{'group_by': 'scope_res_id'}"/>
+                    <filter name="group_project" string="Project" context="{'group_by': 'project_id'}"/>
                     <filter name="group_tab" string="Tab" context="{'group_by': 'surface_tab'}"/>
                 </group>
             </search>

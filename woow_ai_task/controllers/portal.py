@@ -99,9 +99,15 @@ class WoowProjectAiPortal(ProjectCustomerPortal):
 
     def _get_portal_discussion_domain(self):
         """Defined by woow_odoo_portal_discuss (the /my/discussions list and its
-        home card, read with sudo). This module loads after it (deeper
-        dependencies: project), so this override comes first in the combined
-        portal controller; without that module there is nothing to filter."""
+        home card, read with sudo), whose own version does not call super.
+        Odoo combines the leaf portal controllers in reverse order of
+        definition, walking CustomerPortal's subclasses in the order they were
+        defined: this class (a subclass of project's ProjectCustomerPortal)
+        comes first because project is loaded after woow_odoo_portal_discuss
+        (which needs portal and mail only). Should that change, task chats
+        would show in the list again: the coexistence test
+        (tests/test_coexistence.py) checks the list itself. Without that module
+        there is nothing to filter."""
         parent = getattr(super(), '_get_portal_discussion_domain', None)
         if parent is None:
             return NOT_A_TASK_CHAT

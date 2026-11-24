@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 05:36+0000\n"
-"PO-Revision-Date: 2026-11-24 05:36+0000\n"
+"POT-Creation-Date: 2026-11-24 07:08+0000\n"
+"PO-Revision-Date: 2026-11-24 07:08+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -1219,6 +1219,7 @@ msgstr "後端失敗時送出。留空則使用預設訊息。"
 
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_project_project
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__project_id
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_list
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_search
 msgid "Project"
@@ -1862,6 +1863,14 @@ msgstr "這張任務的客戶看得到這個對話。您的訊息會傳給客戶
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/discuss_channel.py:0
+msgid ""
+"The customers read everything in a customer AI chat: internal notes cannot "
+"be posted there."
+msgstr "客戶讀得到客戶 AI 對話裡的一切：不能在這裡張貼內部記事。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid ""
 "The endpoint URL must use https (plain http is only allowed for localhost "
@@ -1896,6 +1905,13 @@ msgid ""
 "customer asked for one, or the AI could not answer a customer): at most one "
 "at a time."
 msgstr "客戶 AI 對話最近一次需要真人處理（客戶要求真人，或 AI 無法回覆客戶）時建立、尚未完成的待辦事項（同時最多一個）。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_usage_month__project_id
+msgid ""
+"The project of the task chats (set with the row; empty once the project is "
+"deleted, the scope keeps its id)."
+msgstr "任務對話所屬的專案（建立這一列時填入；專案刪除後變成空白，範圍仍保留它的 ID）。"
 
 #. module: woow_ai_task
 #. odoo-python

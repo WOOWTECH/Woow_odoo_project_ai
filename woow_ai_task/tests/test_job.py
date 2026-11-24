@@ -11,6 +11,7 @@ import requests
 from odoo import fields
 from odoo.tests.common import tagged
 
+from odoo.addons.woow_ai_task.models import ai_assistant_reply as reply_module
 from odoo.addons.woow_ai_task.models.ai_job import JOB_MAX_AGE_MINUTES, MAX_JOB_RUNS
 from odoo.addons.woow_ai_task.tools import media
 
@@ -565,6 +566,27 @@ class TestN8nJob(ProjectAiCase):
             chat, job, _post = self.run_n8n(payload)
         self.assertFalse(job.reply_message_id.attachment_ids)
         self.assertIn('href="https://files.example.com/big.png"', job.reply_message_id.body)
+
+    def test_files_of_a_reply_share_one_budget(self):
+        # (independent review F6) the files of one reply together: bounded in size...
+        payload = {'reply': {'text': '![a](https://files.example.com/a.png) ![b](https://files.example.com/b.png)'}}
+        responses = [http_response(200, chunks=[TINY_PNG]), http_response(200, chunks=[TINY_PNG])]
+        with patch(MEDIA_GET, side_effect=responses) as get, \
+                patch.object(reply_module, 'MAX_REPLY_BYTES', len(TINY_PNG) + 10):
+            chat, job, _post = self.run_n8n(payload)
+        self.assertEqual(job.state, 'done', job.error)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(job.reply_message_id.attachment_ids.mapped('name'), ['a.png'])
+        self.assertIn('href="https://files.example.com/b.png"', job.reply_message_id.body, 'over the budget: a link')
+        # ...and in time: once the reply's download time is over, nothing more is fetched (a trickling host
+        # cannot hold the reply)
+        payload = {'reply': {'text': '![c](https://files.example.com/c.png)'}}
+        with patch(MEDIA_GET) as get, patch.object(media, '_now', return_value=float('inf')):
+            chat, job, _post = self.run_n8n(payload, user=self.internal)
+        self.assertEqual(job.state, 'done', job.error)
+        get.assert_not_called()
+        self.assertFalse(job.reply_message_id.attachment_ids)
+        self.assertIn('href="https://files.example.com/c.png"', job.reply_message_id.body)
 
     def test_multiple_replies_and_skip(self):
         chat, job, _post = self.run_n8n({'replies': [{'text': 'first'}, {'text': 'second'}]})

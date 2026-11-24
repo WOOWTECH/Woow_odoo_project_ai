@@ -104,9 +104,9 @@ class TestTaskContext(AiTaskFixtures, TransactionCase):
         seen = []
         original = task_module.ProjectTask._woow_project_ai_field_text
 
-        def spy(record, name):
+        def spy(record, name, *args, **kwargs):
             seen.append((record.env.uid, record.env.su))
-            return original(record, name)
+            return original(record, name, *args, **kwargs)
 
         with patch.object(type(self.env['project.task']), '_woow_project_ai_field_text', spy):
             task._woow_project_ai_context_block(self.customer, 'customer')
@@ -114,6 +114,27 @@ class TestTaskContext(AiTaskFixtures, TransactionCase):
         self.assertEqual(set(seen), {(self.customer.id, False)})
         # someone who cannot read the task gets nothing
         self.assertEqual(task._woow_project_ai_context_block(self.outsider, 'customer'), '')
+
+    def test_internal_related_tasks_readable_by_every_member(self):
+        # (independent review, item 33) every member reads the internal answer: a related task that only
+        # the asker can read stays out of the summary
+        private = self.env['project.project'].create({'name': 'Supplier deals', 'privacy_visibility': 'followers'})
+        private.message_subscribe(partner_ids=self.staff.partner_id.ids)
+        self.hidden_sub.project_id = private
+        self.assertTrue(self.hidden_sub.with_user(self.staff).has_access('read'))
+        self.assertFalse(self.hidden_sub.with_user(self.staff2).has_access('read'))
+        # the asker alone: their own rights
+        alone = self.system(self.ask('internal', self.staff, 'first question'))
+        self.assertIn('Negotiate supplier discount', alone)
+        # a colleague who cannot read that subtask joins the chat: it is left out, the shared ones stay
+        self.open_tab(self.staff2, 'internal')
+        shared = self.system(self.ask('internal', self.staff, 'second question'))
+        self.assertNotIn('Negotiate supplier discount', shared)
+        for expected in ('Choose handles', 'Kitchen master plan', 'Install cabinets', 'Staff Sam'):
+            self.assertIn(expected, shared)
+        # the summary itself, for the asker only, is unchanged
+        block = self.task.sudo()._woow_project_ai_context_block(self.staff, 'internal')
+        self.assertIn('Negotiate supplier discount', block)
 
     def test_requester_is_of_the_tab_audience(self):
         # the summary is read with a customer's rights in the customer chat, never a

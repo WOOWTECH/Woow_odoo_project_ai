@@ -230,7 +230,9 @@ File Size*, default 20 MB; no redirect outside the list) and attached; other
 links stay links. `data:image/…;base64` URIs in the text are attached without
 the list. n8n `data_base64` attachments are decoded with the same limit. The
 type is detected from the content; HTML, SVG, XML and scripts are stored as
-`application/octet-stream`. At most 10 files per reply.
+`application/octet-stream`. At most 10 files per reply, 100 MB together, all
+downloaded within 45 seconds (a host that sends its bytes slowly is cut off:
+the file stays a link).
 
 ## Push API (a later reply)
 

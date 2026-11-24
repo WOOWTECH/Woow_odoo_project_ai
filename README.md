@@ -41,8 +41,9 @@ AI (`im_livechat_ai`) without sharing anything with them.
 - **Membership follows the task access**, by Odoo's own rules: only this
   module adds members; synced on every access-relevant change and every hour;
   a post by someone who lost the access is refused and they are removed at
-  once; until the sync, members who lost the access read nothing (a global
-  rule that changes nothing for any other channel). A tab's chat is found
+  once; every message (a person's, an AI reply, a push) first removes the
+  members who lost the access; until the sync, members who lost the access
+  read nothing (a global rule that changes nothing for any other channel). A tab's chat is found
   through the chat's own link only, so no task write can point a tab at
   another conversation.
 - **Every message is answered** (no @AI): a burst of one person gets one
@@ -53,7 +54,9 @@ AI (`im_livechat_ai`) without sharing anything with them.
 - **What the AI gets**: the assistant's prompt, the project text of its tab
   (the customer chat never gets the internal one) and a short task summary
   read with the asker's own rights (customer chat: the portal-readable task
-  fields, without related tasks); never the chatter.
+  fields, without related tasks; internal chat: related records every member
+  can read); never the chatter. The customer chat takes no log note (its
+  customers read everything in it).
 - **Durable reply queue** in the cron process, typing indicator, files both
   ways (images inline, documents as file parts or signed links), Markdown
   replies, push API for n8n "skip, then push", call logs (30 days) and a

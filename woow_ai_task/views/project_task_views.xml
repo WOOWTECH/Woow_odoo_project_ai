@@ -7,7 +7,7 @@
         <field name="arch" type="xml">
             <xpath expr="//notebook" position="inside">
                 <!-- opening a page creates (the first time) or joins the conversation: static/src/backend -->
-                <page string="Internal AI Chat" name="woow_project_ai_internal_chat" groups="base.group_user"
+                <page string="Internal AI Chat" name="woow_project_ai_internal_chat" groups="project.group_project_user"
                       invisible="not id or not woow_project_ai_internal_available">
                     <field name="woow_project_ai_internal_available" invisible="1"/>
                     <widget name="woow_project_ai_task_chat" options="{'tab': 'internal'}"/>

@@ -254,11 +254,7 @@ class ProjectProject(models.Model):
             self.env['discuss.channel']._woow_project_ai_sync_projects(self)
         return res
 
-    def message_subscribe(self, partner_ids=None, subtype_ids=None):
-        res = super().message_subscribe(partner_ids=partner_ids, subtype_ids=subtype_ids)
-        if partner_ids:
-            self.env['discuss.channel']._woow_project_ai_sync_projects(self)
-        return res
+    # (no sync on message_subscribe: a new follower only gains access, nobody loses it)
 
     def message_unsubscribe(self, partner_ids=None):
         res = super().message_unsubscribe(partner_ids=partner_ids)

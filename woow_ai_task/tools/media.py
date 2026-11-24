@@ -217,12 +217,18 @@ def filename_from_url(url, default='file'):
     return clean_filename(path.rsplit('/', 1)[-1], default=default)
 
 
-def download(url, domains, max_bytes, session=None):
+def _now():
+    return time.monotonic()
+
+
+def download(url, domains, max_bytes, session=None, deadline=None):
     """Download an allowlisted URL; returns (bytes, final_url).
 
     Redirects are followed by hand (at most MAX_REDIRECTS), each hop must be
     allowlisted too. The body is streamed and the download is stopped as soon
-    as it exceeds ``max_bytes``.
+    as it exceeds ``max_bytes``, or as soon as ``deadline`` (a
+    ``time.monotonic()`` value: the whole download, every hop and chunk) is
+    over: a host that trickles its bytes cannot hold a reply.
 
     Raises:
         DownloadRefused: with a short reason
@@ -232,8 +238,14 @@ def download(url, domains, max_bytes, session=None):
     for _hop in range(MAX_REDIRECTS + 1):
         if not url_allowed(current, domains):
             raise DownloadRefused('domain not allowed: %s' % url_host(current))
+        timeout = DOWNLOAD_TIMEOUT
+        if deadline is not None:
+            remaining = deadline - _now()
+            if remaining <= 0:
+                raise DownloadRefused('too slow')
+            timeout = (min(DOWNLOAD_TIMEOUT[0], remaining), min(DOWNLOAD_TIMEOUT[1], remaining))
         try:
-            response = http.get(current, stream=True, allow_redirects=False, timeout=DOWNLOAD_TIMEOUT)
+            response = http.get(current, stream=True, allow_redirects=False, timeout=timeout)
         except requests.RequestException as e:
             raise DownloadRefused('request failed: %s' % type(e).__name__)
         try:
@@ -250,6 +262,8 @@ def download(url, domains, max_bytes, session=None):
                 raise DownloadRefused('too large (%s bytes)' % length)
             chunks, total = [], 0
             for chunk in response.iter_content(CHUNK_SIZE):
+                if deadline is not None and _now() > deadline:
+                    raise DownloadRefused('too slow')
                 if not chunk:
                     continue
                 total += len(chunk)
