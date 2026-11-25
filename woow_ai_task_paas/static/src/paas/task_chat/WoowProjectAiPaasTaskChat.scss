@@ -1,0 +1,32 @@
+// libsass (Odoo's asset compiler) takes CSS min()/max()/clamp() for Sass functions and drops the whole bundle:
+// height min(70vh, 720px) with a 420px floor is written as height + max-height + min-height (min-height wins).
+.o_woow_project_ai_paas_chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.o_woow_project_ai_paas_note {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.o_woow_project_ai_paas_archived {
+  color: #92400e;
+}
+
+.o_woow_project_ai_paas_frame {
+  display: block;
+  width: 100%;
+  height: 70vh;
+  max-height: 720px;
+  min-height: 420px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.o_woow_project_ai_paas_newtab {
+  font-size: 0.875rem;
+}

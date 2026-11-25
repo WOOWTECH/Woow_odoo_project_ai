@@ -1,0 +1,126 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* woow_ai_task_paas
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 18.0-20250807\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-25 11:34+0000\n"
+"PO-Revision-Date: 2026-11-25 11:34+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/ir_module.py:0
+msgid ""
+"\"Project AI - PaaS\" cannot be uninstalled alone: uninstall \"Project AI\" "
+"(woow_ai_task), which removes it too. Removing it alone would bring the old "
+"task AI back."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid ""
+"Ask our AI assistant about this task, at any time. Your messages and files "
+"are also visible to our team and to the other people who can see this task."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_cloud_service
+msgid "Cloud Service Instance"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+#: code:addons/woow_ai_task_paas/static/src/paas/task_detail_patch.xml:0
+msgid "Customer AI Chat"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_ir_http
+msgid "HTTP Routing"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_task.py:0
+msgid "Linked Cloud Services"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_ir_module_module
+msgid "Module"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_project.py:0
+msgid ""
+"Only project managers can set the AI assistants and the project texts of a "
+"project."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid "Open this chat in a new tab"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_agent_session
+msgid "Per-project Agent Runtime Pod Lifecycle Record"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_project_project
+msgid "Project"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_project_task
+msgid "Task"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid ""
+"The customers of this task read this chat. A message of yours goes to them "
+"and pauses the AI for a while; the AI does not answer colleagues here."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/legacy.py:0
+msgid ""
+"The old task AI is turned off. Customers: please use the \"Customer AI "
+"Chat\" on the task page; colleagues: the \"Internal AI Chat\" on the task "
+"form in the backend."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_project.py:0
+msgid ""
+"The old task AI is turned off: the Agent Runtime cannot be turned on for a "
+"project."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid "This task is archived: its AI chats can only be read."
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_workspace_access
+msgid "Workspace User Access"
+msgstr ""

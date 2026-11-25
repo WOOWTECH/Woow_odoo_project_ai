@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+  <!-- four anchors (asserted by tests/test_platform_contract.py): the old Chat tab button, the old Chat tab
+       content, the tab bar, the tab content. An anchor that no longer matches breaks this page when it first
+       renders (Odoo applies template extensions in the browser), so the platform's own docs ask its developers
+       to check with this module before editing them. The expressions tolerate a missing JS patch (the template
+       extension registers on its own): nothing new shows, the old Chat tab stays hidden. -->
+  <t t-inherit="woow_paas_platform.TaskDetailPage" t-inherit-mode="extension">
+    <xpath expr="//div[hasclass('o_woow_td_tabs')]/button[contains(@t-on-click, &quot;setTab('chat')&quot;)]"
+           position="attributes">
+      <attribute name="t-if">woowProjectAiPaasLegacy === true</attribute>
+    </xpath>
+    <xpath expr="//t[@t-if=&quot;state.activeTab === 'chat'&quot;]" position="attributes">
+      <attribute name="t-if">state.activeTab === 'chat' and woowProjectAiPaasLegacy === true</attribute>
+    </xpath>
+    <xpath expr="//div[hasclass('o_woow_td_tabs')]" position="inside">
+      <button t-if="woowProjectAiPaas and woowProjectAiPaas.info and woowProjectAiPaas.info.available"
+              t-att-class="'o_woow_td_tab o_woow_project_ai_paas_tab' + (state.activeTab === 'woow_project_ai_customer' ? ' o_woow_td_tab--active' : '')"
+              t-on-click="() => this.setTab('woow_project_ai_customer')">
+        <WoowIcon name="'support_agent'" size="18"/>
+        Customer AI Chat
+      </button>
+    </xpath>
+    <xpath expr="//div[hasclass('o_woow_td_content')]" position="inside">
+      <!-- rendered only while its tab is selected: opening creates or joins the chat, never with the page -->
+      <t t-if="state.activeTab === 'woow_project_ai_customer' and woowProjectAiPaas and woowProjectAiPaas.info and woowProjectAiPaas.info.available">
+        <WoowProjectAiPaasTaskChat info="woowProjectAiPaas.info"/>
+      </t>
+    </xpath>
+  </t>
+</templates>
