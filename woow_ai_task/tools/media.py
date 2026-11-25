@@ -124,6 +124,25 @@ def host_allowed(host, domains):
     return False
 
 
+def intersect_domains(domains, hosts):
+    """The entries of `hosts` (exact hosts or ``*.example.com``) that the
+    allowlist `domains` also allows: where both lists must agree (a file of
+    an AI reply in a consulted chat, docs/PROJECT.md 「AI 顧問」)."""
+    allowed = []
+    for host in hosts or ():
+        host = (host or '').lower().rstrip('.')
+        if not host:
+            continue
+        if host.startswith('*.'):
+            suffix = host[2:]
+            if any(domain == host or (domain.startswith('*.') and suffix.endswith('.' + domain[2:]))
+                   for domain in domains or ()):
+                allowed.append(host)
+        elif host_allowed(host, domains or ()):
+            allowed.append(host)
+    return allowed
+
+
 def is_internal_host(host):
     """localhost or an in-cluster ``*.svc.cluster.local`` host."""
     host = (host or '').lower().rstrip('.')

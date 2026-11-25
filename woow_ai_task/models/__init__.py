@@ -9,6 +9,9 @@ from . import ai_job
 from . import push_key_wizard
 from . import project_project
 from . import project_task
+from . import consult_mixin
+from . import consult_profile
+from . import consult_sent
 from . import discuss_channel
 from . import discuss_channel_member
 from . import mail_thread

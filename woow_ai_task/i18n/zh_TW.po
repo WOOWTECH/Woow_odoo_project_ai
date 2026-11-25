@@ -6,14 +6,40 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 04:50+0000\n"
-"PO-Revision-Date: 2026-11-25 04:50+0000\n"
+"POT-Creation-Date: 2026-11-25 09:13+0000\n"
+"PO-Revision-Date: 2026-11-25 09:13+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
 "Plural-Forms: nplurals=1; plural=0;\n"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"\"Was Enabled Once\" is never reset: the records sent to the AI keep "
+"deciding who may read those chats."
+msgstr "「曾經開啟」不會取消：已經送給 AI 的紀錄會一直決定誰能讀那些對話。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "%(count)s more records you cannot read"
+msgstr "另有 %(count)s 筆你沒有權限讀取的紀錄"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "%(kind)s: %(name)s (other)"
+msgstr "%(kind)s：%(name)s（其他）"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "%(kind)s: %(name)s (primary)"
+msgstr "%(kind)s：%(name)s（主要）"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -39,6 +65,18 @@ msgstr "%s（副本）"
 #: code:addons/woow_ai_task/models/ai_assistant_reply.py:0
 msgid "(An image in the reply could not be attached.)"
 msgstr "（回覆中的一張圖片無法附加。）"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "(not enabled: the AI does not read it)"
+msgstr "（未啟用，AI 不會讀取）"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "- %(name)s: %(count)s chats"
+msgstr "- %(name)s：會被移出 %(count)s 個對話"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_my_task_woow_project_ai
@@ -144,6 +182,27 @@ msgid ""
 msgstr "評分不能針對任務 AI 對話或它的訊息。"
 
 #. module: woow_ai_task
+#: model:ir.model.constraint,message:woow_ai_task.constraint_woow_project_ai_consult_sent_channel_record_uniq
+msgid "A record is listed once per chat."
+msgstr "一筆紀錄在同一個對話只記一次。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"A setting that was ever enabled cannot be deleted: disable it instead (the "
+"records sent to the AI keep deciding who may read those chats)."
+msgstr "曾經開啟過的設定不能刪除，請改成關閉（已經送給 AI 的紀錄會一直決定誰能讀那些對話）。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid ""
+"A system administrator has not turned on the AI consultant for this kind of "
+"record yet."
+msgstr "系統管理員還沒有開啟這類紀錄的 AI 顧問。"
+
+#. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_project.py:0
 msgid ""
@@ -178,6 +237,14 @@ msgstr "任務 AI 對話不接受評分。"
 #: model:ir.model.constraint,message:woow_ai_task.constraint_discuss_channel_woow_project_ai_tab_uniq
 msgid "A task has one AI conversation per tab."
 msgstr "每張任務的每個分頁只有一個 AI 對話。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__role_prompt
+msgid ""
+"A trusted instruction for the internal AI (at most 1,000 characters), sent "
+"with every consultation that includes these records. Never sent to the "
+"customer tab."
+msgstr "給內部 AI 的受信任指示（最多 1,000 字），每次諮詢含這類紀錄時一起送出；絕不送到客戶分頁。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__assistant_id
@@ -220,6 +287,52 @@ msgid "AI Connections"
 msgstr "AI 連線"
 
 #. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_woow_project_ai_consult_mixin
+msgid "AI Consultant Record"
+msgstr "AI 顧問紀錄"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+#: model:ir.model.fields,field_description:woow_ai_task.field_project_task__woow_project_ai_consult_summary
+msgid "AI Consultant Records"
+msgstr "AI 顧問對象"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__profile_id
+msgid "AI Consultant Setting"
+msgstr "AI 顧問設定"
+
+#. module: woow_ai_task
+#: model:ir.actions.act_window,name:woow_ai_task.action_woow_project_ai_consult_profile
+#: model:ir.model,name:woow_ai_task.model_woow_project_ai_consult_profile
+#: model:ir.ui.menu,name:woow_ai_task.menu_woow_project_ai_consult_profile
+msgid "AI Consultant Settings"
+msgstr "AI 顧問設定"
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_woow_project_ai_consult_preview
+msgid "AI Consultant: Impact Preview"
+msgstr "AI 顧問：預覽影響"
+
+#. module: woow_ai_task
+#: model:ir.model,name:woow_ai_task.model_woow_project_ai_consult_sent
+msgid "AI Consultant: Records Sent to the AI"
+msgstr "AI 顧問：已送給 AI 的紀錄"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_project_task__woow_project_ai_consult_entry
+msgid "AI Consultation Topic"
+msgstr "AI 顧問議題"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_mixin__woow_project_ai_consult_task_count
+msgid "AI Consultations"
+msgstr "AI 顧問"
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_project_project__woow_project_ai_pause_minutes
 msgid "AI Pause After a Colleague Writes (minutes)"
 msgstr "同事發言後 AI 暫停（分鐘）"
@@ -255,6 +368,18 @@ msgstr "AI 用量"
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
 msgid "AI Usage of This Project"
 msgstr "這個專案的 AI 用量"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid "AI consultation: %(kind)s #%(id)s"
+msgstr "AI 顧問：%(kind)s #%(id)s"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid "AI consultation: %(name)s"
+msgstr "AI 顧問：%(name)s"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__api_key
@@ -293,6 +418,13 @@ msgid ""
 "An AI connection says where the brain of the project AI assistants is: a LiteLLM server or an n8n\n"
 "                webhook, with its key and call settings."
 msgstr "AI 連線說明專案 AI 助理的大腦在哪裡：LiteLLM 伺服器或 n8n webhook，以及它的金鑰與呼叫設定。"
+
+#. module: woow_ai_task
+#: model_terms:ir.actions.act_window,help:woow_ai_task.action_woow_project_ai_consult_profile
+msgid ""
+"An AI consultant module (for example \"Project AI - CRM\") adds its kind of "
+"record here, switched off."
+msgstr "AI 顧問模組（例如「Project AI - CRM」）會把它的紀錄類別加到這裡，預設關閉。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_customer_assistant_id
@@ -402,6 +534,11 @@ msgid ""
 msgstr "呼叫紀錄現在會儲存送往後端與後端回傳的對話內容，管理員因此看得到私人對話。除錯完請關閉：關閉後已儲存的內容會一併清除。"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_mixin__woow_project_ai_consult_enabled
+msgid "Can Ask the AI Consultant"
+msgstr "可詢問 AI 顧問"
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
 msgid "Capabilities"
 msgstr "能力"
@@ -410,6 +547,17 @@ msgstr "能力"
 #: model:ir.model,name:woow_ai_task.model_discuss_channel_member
 msgid "Channel Member"
 msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "Choose a consultation project before enabling the AI consultant."
+msgstr "啟用 AI 顧問前，請先選顧問專案。"
+
+#. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_preview_form
+msgid "Close"
+msgstr "關閉"
 
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_project_collaborator
@@ -437,6 +585,23 @@ msgstr "連線正常（HTTP %s）。"
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__customer_safe
 msgid "Connection Safe for Customers"
 msgstr "連線可給客戶使用"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__role_prompt
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
+msgid "Consultant Role"
+msgstr "顧問角色說明"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__project_id
+msgid "Consultation Project"
+msgstr "顧問專案"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "Consulted before: %(kind)s: %(name)s"
+msgstr "之前諮詢過：%(kind)s：%(name)s"
 
 #. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_res_partner
@@ -488,6 +653,8 @@ msgstr "建立時間"
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__create_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__create_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__create_uid
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__create_uid
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__create_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__create_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__create_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__create_uid
@@ -495,9 +662,18 @@ msgid "Created by"
 msgstr "建立者"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_project_task__woow_project_ai_consult_entry
+msgid ""
+"Created by \"Ask the AI Consultant\" on a record: the button continues the "
+"latest open one of these."
+msgstr "在紀錄上按「詢問 AI 顧問」建立的任務：按鈕會接著用其中最近一張還開著的。"
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__create_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__create_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__create_date
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__create_date
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__create_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__create_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__create_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__create_date
@@ -578,6 +754,11 @@ msgid "Customer waits for an answer"
 msgstr "客戶在等回覆"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__data_destination
+msgid "Data Goes To"
+msgstr "資料會送到"
+
+#. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
 msgid "Debug"
 msgstr "除錯"
@@ -610,6 +791,9 @@ msgstr ""
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__display_name
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__display_name
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__display_name
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__display_name
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__display_name
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_sent__display_name
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__display_name
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__display_name
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__display_name
@@ -648,6 +832,11 @@ msgid "Each bot partner can belong to one AI assistant only."
 msgstr "每個機器人聯絡人只能屬於一個 AI 助理。"
 
 #. module: woow_ai_task
+#: model:ir.model.constraint,message:woow_ai_task.constraint_woow_project_ai_consult_profile_model_uniq
+msgid "Each kind of record has one AI consultant setting."
+msgstr "每一類紀錄只有一筆 AI 顧問設定。"
+
+#. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_mail_thread
 msgid "Email Thread"
 msgstr ""
@@ -661,6 +850,11 @@ msgstr ""
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Empty: Sorry, I cannot answer right now. Please try again later."
 msgstr "留空：抱歉，我現在無法回覆，請稍後再試。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__enabled
+msgid "Enable the AI Consultant"
+msgstr "啟用 AI 顧問"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__endpoint_url
@@ -834,11 +1028,28 @@ msgstr "這個工作開始處理的次數（最多 3 次）"
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__id
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__id
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__id
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__id
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__id
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_sent__id
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__id
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__id
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__id
 msgid "ID"
 msgstr "ID"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "If you enable it, nobody leaves a task AI chat."
+msgstr "啟用後，不會有人被移出任務 AI 對話。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"If you enable it, these people leave task AI chats (they cannot read a "
+"record linked to the task, or one its AI already got):"
+msgstr "啟用後，這些人會被移出任務 AI 對話（他們讀不到任務連到的紀錄，或 AI 已經拿到的紀錄）："
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__image_1920
@@ -879,6 +1090,11 @@ msgid ""
 "                                nothing) or as links. n8n backends get every attachment as a signed download link\n"
 "                                (the workflow downloads it)."
 msgstr "圖片一律直接附上。文件原檔送出（Odoo 不轉換）或只給連結。n8n 後端收到的每個附件都是簽名下載連結（由流程自行下載）。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__result
+msgid "Impact"
+msgstr "影響"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
@@ -1005,6 +1221,8 @@ msgstr "上下文最後一則訊息"
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__write_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__write_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__write_uid
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__write_uid
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__write_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__write_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__write_uid
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__write_uid
@@ -1015,6 +1233,8 @@ msgstr "最後更新者"
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_assistant__write_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_call_log__write_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__write_date
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_preview__write_date
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__write_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__write_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_push_key_wizard__write_date
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__write_date
@@ -1161,6 +1381,7 @@ msgstr "任務 AI 對話的訊息只能在對話裡撰寫、編輯和刪除。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__model
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__model
 msgid "Model"
 msgstr "模型"
 
@@ -1201,6 +1422,20 @@ msgstr "尚未儲存 API 金鑰。變更後端主機或後端類型會移除已�
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "No consultation project is chosen yet."
+msgstr "還沒有選顧問專案。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid ""
+"No consultation project is set yet. A system administrator chooses one in "
+"\"AI Consultant Settings\"."
+msgstr "還沒有設定顧問專案，請系統管理員在「AI 顧問設定」選一個專案。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/ai_assistant.py:0
 msgid ""
 "No cron runner was found: max_cron_threads is 0 in this server, or it runs "
@@ -1209,6 +1444,11 @@ msgid ""
 msgstr ""
 "找不到排程工作執行者：本伺服器 max_cron_threads 為 0 或以 --stop-after-init "
 "執行，而且最近沒有其他程序執行過這個排程動作。"
+
+#. module: woow_ai_task
+#: model_terms:ir.actions.act_window,help:woow_ai_task.action_woow_project_ai_consult_profile
+msgid "No kind of record can be consulted yet"
+msgstr "還沒有可以諮詢的紀錄類別"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
@@ -1243,15 +1483,35 @@ msgid ""
 msgstr "不是任務 AI 對話，或目前的使用者現在讀得到它的任務（內部對話：有專案權限、也讀得到它的專案的員工）。"
 
 #. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "Nowhere yet: no internal AI assistant in the consultation project"
+msgstr "還不會送出：顧問專案沒有內部用 AI 助理"
+
+#. module: woow_ai_task
 #: model:ir.model.fields.selection,name:woow_ai_task.selection__woow_project_ai_call_log__status__ok
 msgid "OK"
 msgstr "成功"
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid "Only \"Ask the AI Consultant\" marks a task as an AI consultation topic."
+msgstr "只有「詢問 AI 顧問」能把任務標成 AI 顧問議題。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "Only Odoo itself posts notices in a task AI conversation."
 msgstr "只有 Odoo 本身會在任務 AI 對話張貼通知。"
+
+#. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
+msgid ""
+"Only colleagues with the user rights of the Project app see \"Ask the AI Consultant\";\n"
+"                            those who cannot read the consultation project are told to ask a project manager to add\n"
+"                            them to it."
+msgstr "只有有「專案」使用者權限的同事看得到「詢問 AI 顧問」；讀不到顧問專案的人按下去，會看到要請專案經理加入專案的說明。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
@@ -1299,9 +1559,21 @@ msgstr "只有任務 AI 對話能從任務加入。"
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/consult_sent.py:0
+msgid "Only the AI consultant itself records what was sent to the AI."
+msgstr "只有 AI 顧問自己能記錄送給 AI 的紀錄。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "Only the AI task chat itself changes its pause."
 msgstr "只有任務 AI 對話自己會改變暫停狀態。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "Only the first %(limit)s chats were checked."
+msgstr "只檢查了前 %(limit)s 個對話。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -1408,6 +1680,13 @@ msgid "Posted when the backend fails. Empty: a default message."
 msgstr "後端失敗時送出。留空則使用預設訊息。"
 
 #. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
+msgid "Preview the Impact"
+msgstr "預覽影響"
+
+#. module: woow_ai_task
 #: model:ir.model,name:woow_ai_task.model_project_project
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_usage_month__project_id
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_usage_month_search
@@ -1489,6 +1768,11 @@ msgstr "專案 AI：執行 AI 回覆"
 #: model:ir.actions.server,name:woow_ai_task.ir_cron_project_ai_sync_members_ir_actions_server
 msgid "Project AI: Sync Task Chat Members"
 msgstr "專案 AI：同步任務對話成員"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__project_from_record
+msgid "Project From the Record"
+msgstr "專案由紀錄決定"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_project_project__woow_project_ai_customer_brief
@@ -1622,6 +1906,21 @@ msgstr "可以使用：這條連線可以用。未就緒：請看檢查結果。
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "Reason given by the AI: %(reason)s"
 msgstr "AI 提供的原因：%(reason)s"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_sent__res_id
+msgid "Record ID"
+msgstr "紀錄編號"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_sent__res_model
+msgid "Record Model"
+msgstr "紀錄模型"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__model_id
+msgid "Record Type"
+msgstr "紀錄類別"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.portal_open_expired
@@ -1864,10 +2163,23 @@ msgid "Set the endpoint URL."
 msgstr "請設定後端網址。"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__was_enabled
+msgid ""
+"Set the first time this setting is enabled and never reset: from then on the"
+" records sent to the AI keep deciding who may read those chats, also after "
+"the setting is disabled."
+msgstr "第一次啟用時勾上，之後不會取消：從那時起，已經送給 AI 的紀錄會一直決定誰能讀那些對話，關閉之後也一樣。"
+
+#. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "Set the model: LiteLLM picks the deployment by its name."
 msgstr "請設定模型：LiteLLM 依模型名稱選擇部署。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_project_task__woow_project_ai_consult_show
+msgid "Show the AI Consultant Records"
+msgstr "顯示 AI 顧問對象"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
@@ -1881,6 +2193,14 @@ msgstr "專案經理選擇 AI 助理時看到的說明"
 msgid ""
 "Shown to project managers when they choose the AI assistants of a project."
 msgstr "專案經理選擇專案的 AI 助理時看到的說明。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__enabled
+msgid ""
+"Shows \"Ask the AI Consultant\" on these records to colleagues with Project "
+"rights, and lets only the people who can read the consulted records use the "
+"task AI chats linked to them."
+msgstr "讓有「專案」權限的同事在這些紀錄上看到「詢問 AI 顧問」，而且只有讀得到被諮詢紀錄的人，才能使用連到它們的任務 AI 對話。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
@@ -1940,6 +2260,11 @@ msgid "Task"
 msgstr ""
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_sent__channel_id
+msgid "Task AI Chat"
+msgstr "任務 AI 對話"
+
+#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_res_users__woow_project_ai_readable_rule
 msgid "Task AI Chats Rule"
 msgstr "任務 AI 對話規則"
@@ -1955,6 +2280,12 @@ msgstr "任務 AI 對話"
 #: code:addons/woow_ai_task/models/ir_attachment.py:0
 msgid "Task AI chat file"
 msgstr "任務 AI 對話檔案"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "Task AI chats linked to records of this kind: %(count)s."
+msgstr "連到這類紀錄的任務 AI 對話：%(count)s 個。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -1984,6 +2315,13 @@ msgid ""
 "The AI assistant \"%(name)s\" is archived. A system administrator must "
 "restore it, or choose another AI assistant."
 msgstr "AI 助理「%(name)s」已封存。請系統管理員把它取消封存，或改選別的 AI 助理。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__data_destination
+msgid ""
+"The AI assistant (and its kind of AI connection) that receives the record "
+"data of a consultation."
+msgstr "收到諮詢紀錄資料的 AI 助理（和它的 AI 連線種類）。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2026,6 +2364,13 @@ msgid ""
 msgstr ""
 "「%(name)s」的 AI 連線不可給客戶使用。請系統管理員檢查那個 n8n 流程：只有在它不查公司資料、不呼叫工具、也不記憶時，才在它的 AI "
 "連線勾選「可給客戶使用」（專案 > 配置 > 專案 AI > AI 連線）；或替客戶分頁改選別的 AI 助理。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_mixin__woow_project_ai_consult_enabled
+msgid ""
+"The AI consultant is enabled for this kind of record and you have the user "
+"rights of the Project app."
+msgstr "這類紀錄已開啟 AI 顧問，而且你有「專案」的使用者權限。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2077,6 +2422,36 @@ msgstr "AI 助理的機器人聯絡人不能是系統使用者。"
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "The connection is archived."
 msgstr "這條連線已封存。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "The consultant role can have at most %(max)s characters."
+msgstr "顧問角色說明最多 %(max)s 字。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid ""
+"The consultation project has no internal AI assistant yet. A project manager"
+" chooses one on the \"AI Assistants\" page of the project."
+msgstr "顧問專案還沒有選內部用 AI 助理，請專案經理在專案的「AI 助理」頁設定。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"The consultation project is shared with portal users: customers added to it "
+"see the names (with the record names) and assignees of its consultation "
+"tasks."
+msgstr "顧問專案分享給 portal 使用者：被加入的客戶看得到顧問任務的名稱（含紀錄名稱）和負責人。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__project_id
+msgid ""
+"The consultation tasks are created in this project; its internal AI "
+"assistant answers them."
+msgstr "顧問任務建在這個專案，由它的內部用 AI 助理回答。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2143,6 +2518,36 @@ msgstr ""
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "The internal AI assistant of the project each record names"
+msgstr "每筆紀錄指定的專案的內部用 AI 助理"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"The internal AI connection is n8n: make sure the workflow keeps no memory "
+"across conversations and never lets the AI decide to fetch URLs, and note "
+"that n8n keeps the data of every execution it receives."
+msgstr "內部用 AI 連線是 n8n：請確認流程不會跨對話記憶、不會讓 AI 自己決定去讀取網址，並留意 n8n 會保存每次執行收到的資料。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"The internal AI of the consultation project cannot answer now: see the \"AI "
+"Assistants\" page of the project."
+msgstr "顧問專案的內部用 AI 目前無法回答，請看專案的「AI 助理」頁。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__model_id
+msgid ""
+"The kind of record staff may ask the AI consultant about. Only kinds with an"
+" AI consultant module (for example \"Project AI - CRM\") can be chosen."
+msgstr "同事可以詢問 AI 顧問的紀錄類別。只能選有 AI 顧問模組的類別（例如「Project AI - CRM」）。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "The maximum file size must be between 1 and 100 MB."
 msgstr "檔案大小上限必須介於 1 到 100 MB 之間。"
@@ -2154,6 +2559,19 @@ msgid ""
 "The members of a task AI conversation follow the task access: people join "
 "from the task's AI tab."
 msgstr "任務 AI 對話的成員依任務權限決定：大家從任務的 AI 分頁加入。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"The names of consultation tasks carry the record's name (renaming the record"
+" later does not rename them): everyone who can read the consultation project"
+" sees them, names typed by website visitors included. With Odoo's default "
+"user template every employee is a Project Administrator and reads every "
+"task."
+msgstr ""
+"顧問任務的名稱會帶紀錄名稱（之後改紀錄名稱不會跟著改）：讀得到顧問專案的人都看得到，包括網站訪客自己填的名稱。依 Odoo "
+"的預設使用者範本，每位員工都是「專案：管理員」，讀得到每一張任務。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
@@ -2182,6 +2600,18 @@ msgstr "任務對話所屬的專案（建立這一列時填入；專案刪除後
 #: code:addons/woow_ai_task/models/project_task.py:0
 msgid "The project of this task has no AI assistant for this tab."
 msgstr "這張任務的專案沒有替這個分頁設定 AI 助理。"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_consult_profile__project_from_record
+msgid ""
+"The record's own module chooses the consultation project of each record."
+msgstr "每筆紀錄的顧問專案由紀錄自己的模組決定。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "The records already sent to the AI keep deciding in any case."
+msgstr "已經送給 AI 的紀錄無論如何都會繼續決定誰能用對話。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_discuss_channel__woow_project_ai_notice_sent
@@ -2217,6 +2647,14 @@ msgstr "客戶 AI 對話的歡迎訊息是專案的設定（在專案的「AI �
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"These records have no fields for customers: the customer tab gets no record "
+"data."
+msgstr "這類紀錄沒有給客戶看的欄位：客戶分頁不會收到紀錄資料。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/ai_assistant.py:0
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid "This field can only be searched as equal to True or False."
@@ -2227,6 +2665,14 @@ msgstr "這個欄位只能搜尋等於 True 或 False。"
 #: code:addons/woow_ai_task/models/ir_attachment.py:0
 msgid "This file is in a task AI conversation you cannot read."
 msgstr "這個檔案在您讀不到的任務 AI 對話中。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid ""
+"This kind of record has no AI consultant: install its AI consultant module "
+"first."
+msgstr "這類紀錄沒有 AI 顧問：請先安裝它的 AI 顧問模組。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2347,6 +2793,16 @@ msgstr ""
 "以上，並且每個有 AI 助理的資料庫各有自己的 cron 程序。"
 
 #. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__warning
+msgid "Warnings"
+msgstr "警告"
+
+#. module: woow_ai_task
+#: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__was_enabled
+msgid "Was Enabled Once"
+msgstr "曾經開啟"
+
+#. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_call_log__scope_res_id
 msgid "What the call is counted for: the project of the task."
 msgstr "這次呼叫計入的對象：任務所屬的專案。"
@@ -2355,6 +2811,12 @@ msgstr "這次呼叫計入的對象：任務所屬的專案。"
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
 msgid "What the customer AI may tell customers about this project"
 msgstr "客戶 AI 可以告訴客戶的專案資訊"
+
+#. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
+msgid ""
+"What the internal AI should do with these records (at most 1,000 characters)"
+msgstr "內部 AI 該怎麼處理這些紀錄（最多 1,000 字）"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.edit_project_woow_project_ai
@@ -2377,6 +2839,24 @@ msgid ""
 " later."
 msgstr ""
 "同事在任務的客戶對話中發言時，AI 在那裡暫停這麼多分鐘（1-1440），同事每多發一則訊息就重新計算。這段期間客戶寫的訊息之後也不會回覆。"
+
+#. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
+msgid ""
+"When enabled, only the colleagues and customers who can read these records can use the\n"
+"                            task AI chats linked to them; the others are removed and no longer see the earlier\n"
+"                            answers either."
+msgstr "啟用後，只有讀得到這些紀錄的同事和客戶，才能使用連到這些紀錄的任務 AI 對話；讀不到的人會被移出，之前的回答也看不到。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid ""
+"When the AI answers, it reads some fields of the records below with the "
+"asker's own rights. Only colleagues who can read these records (including "
+"the ones this task consulted before) can use this task's AI chats."
+msgstr ""
+"AI 回答時會依提問者本人的權限讀取下列紀錄的部分欄位。只有讀得到這些紀錄（包括這張任務以前諮詢過的紀錄）的同事，才能使用這張任務的 AI 對話。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_call_log__surface_type
@@ -2435,6 +2915,44 @@ msgstr "您不能在這個任務 AI 對話加表情回應：您需要這張任�
 
 #. module: woow_ai_task
 #. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid ""
+"You cannot read the record you are adding, so you cannot add it to the AI "
+"consultant records."
+msgstr "你沒有權限讀取要加入的紀錄，不能把它加入 AI 顧問對象。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_task.py:0
+msgid ""
+"You cannot read the records this task consulted, so you cannot use its AI "
+"conversation."
+msgstr "你讀不到這張任務諮詢過的紀錄，不能使用它的 AI 對話。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid "You have no access to read this record."
+msgstr "你沒有權限讀取這筆紀錄。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid ""
+"You have no access to this consultation project. Please ask a project "
+"manager to add you to the project."
+msgstr "你沒有這個顧問專案的存取權，請專案經理把你加入專案。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_mixin.py:0
+msgid ""
+"You need the user rights of the Project app to use the AI consultant. Please"
+" ask a system administrator."
+msgstr "你需要「專案」的使用者權限才能使用 AI 顧問，請洽系統管理員。"
+
+#. module: woow_ai_task
+#. odoo-python
 #: code:addons/woow_ai_task/models/discuss_channel.py:0
 msgid ""
 "You no longer have access to this task, so you were removed from its AI "
@@ -2487,3 +3005,9 @@ msgstr "project_task：任務 AI 對話。"
 #: code:addons/woow_ai_task/models/ai_assistant.py:0
 msgid "this server"
 msgstr "本伺服器"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/consult_profile.py:0
+msgid "… and %(count)s more people."
+msgstr "…另有 %(count)s 人。"

@@ -39,6 +39,7 @@ from odoo import api, models
 
 from ..tools import media
 from ..tools.logs import log_unexpected  # noqa: F401 - also imported from here by older code
+from ..tools.record_text import clean_data_text
 from .discuss_channel import one_line_name, trusted
 
 _logger = logging.getLogger(__name__)
@@ -300,8 +301,12 @@ class WoowProjectAiAssistantBackend(models.Model):
 
     @api.model
     def _identity_system_text(self, identity):
-        """Identity block of the openai system message. Never the email: what
-        the model sees may stay in provider logs."""
+        """Identity block of the openai system message (after the system
+        prompt). Never the email: what the model sees may stay in provider
+        logs. Every value is cleaned as a one-line value of the data section
+        (tools/record_text.clean_data_text), and the name then follows the
+        contract's name rule (one_line_name): a name (anyone may set their own)
+        can neither break the block into lines nor write a data marker."""
         if identity.get('is_portal'):
             account = 'portal user (customer)'
         elif identity.get('user_id'):
@@ -309,13 +314,17 @@ class WoowProjectAiAssistantBackend(models.Model):
         else:
             account = 'contact without user account'
         lines = ['You are chatting in Odoo with this person (information only, no login is delegated):']
-        # the kind of account first, then the ids, the language and the time zone; the name last, cleaned
-        # (contract 3.7: a name, which anybody may choose, never comes before the facts the system sets)
+        # the kind of account first, then the ids, the language and the time zone; the name last (contract 3.7: a
+        # name, which anybody may choose, never comes before the facts the system sets), cleaned as a data value
+        # first, then by the contract's name rule; a name with an '@' is '' here already (_identity): no line
+        name = one_line_name(clean_data_text(identity.get('name'), one_line=True))
         for label, value in (('account', account), ('user_id', identity.get('user_id')),
                              ('partner_id', identity.get('partner_id')), ('language', identity.get('lang')),
-                             ('timezone', identity.get('tz')), ('name', one_line_name(identity.get('name')))):
+                             ('timezone', identity.get('tz')), ('name', name)):
             if value not in (None, '', False):
-                lines.append('- %s: %s' % (label, value))
+                text = clean_data_text(value, one_line=True)
+                if text:
+                    lines.append('- %s: %s' % (label, text))
         return '\n'.join(lines)
 
     @api.model

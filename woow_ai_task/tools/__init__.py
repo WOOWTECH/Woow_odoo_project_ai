@@ -5,3 +5,4 @@ from . import dispatcher
 from . import ids
 from . import logs
 from . import urls
+from . import record_text

@@ -8,6 +8,8 @@
               action="action_woow_project_ai_connection" sequence="10" groups="base.group_system"/>
     <menuitem id="menu_woow_project_ai_assistant" name="AI Assistants" parent="menu_woow_project_ai_root"
               action="action_woow_project_ai_assistant" sequence="20" groups="base.group_system"/>
+    <menuitem id="menu_woow_project_ai_consult_profile" name="AI Consultant Settings" parent="menu_woow_project_ai_root"
+              action="action_woow_project_ai_consult_profile" sequence="25" groups="base.group_system"/>
     <menuitem id="menu_woow_project_ai_job" name="Reply Jobs" parent="menu_woow_project_ai_root"
               action="action_woow_project_ai_job" sequence="30" groups="base.group_system"/>
     <menuitem id="menu_woow_project_ai_call_log" name="Call Logs" parent="menu_woow_project_ai_root"

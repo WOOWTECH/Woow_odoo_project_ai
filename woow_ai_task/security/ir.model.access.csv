@@ -6,3 +6,6 @@ access_woow_project_ai_job_system,woow.project.ai.job.system,model_woow_project_
 access_woow_project_ai_call_log_system,woow.project.ai.call.log.system,model_woow_project_ai_call_log,base.group_system,1,0,0,1
 access_woow_project_ai_usage_month_system,woow.project.ai.usage.month.system,model_woow_project_ai_usage_month,base.group_system,1,0,0,0
 access_woow_project_ai_push_key_wizard_system,woow.project.ai.push.key.wizard.system,model_woow_project_ai_push_key_wizard,base.group_system,1,1,1,1
+access_woow_project_ai_consult_profile_system,woow.project.ai.consult.profile.system,model_woow_project_ai_consult_profile,base.group_system,1,1,1,1
+access_woow_project_ai_consult_sent_system,woow.project.ai.consult.sent.system,model_woow_project_ai_consult_sent,base.group_system,1,0,0,0
+access_woow_project_ai_consult_preview_system,woow.project.ai.consult.preview.system,model_woow_project_ai_consult_preview,base.group_system,1,1,1,1

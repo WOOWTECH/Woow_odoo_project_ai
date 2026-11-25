@@ -26,16 +26,17 @@ its own; they share no code and no data.
 | Project AI (this repository) | `woow_ai_task` | Gitea `woow-paas/Woow_odoo_project_ai` |
 | Live Chat AI | `im_livechat_ai` | GitHub `WOOWTECH/Woow_odoo_ai_livechat` |
 
-This repository's modules (`woow_ai_task` and its five bridges):
+This repository's modules (`woow_ai_task`, its five bridges and the CRM template of the AI form consultant):
 
 | Module | Status | What it does |
 |---|---|---|
-| `woow_ai_task` | 18.0.1.0.0 | Project AI: internal and customer AI chats on every task |
+| `woow_ai_task` | 18.0.1.1.0 | Project AI: internal and customer AI chats on every task; the AI form consultant's mechanism |
 | `woow_ai_task_portal_discuss` | 18.0.1.0.0 | Bridge, installed automatically with `woow_odoo_portal_discuss`: task chats stay out of `/my/discussions`, its tabs and its card |
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows; the unread messages of the customer's task AI chats get their own notice and `/my` card, which open the task page |
 | `woow_ai_task_snailmail` | 18.0.1.0.0 | Bridge, installed automatically with `snailmail` (which Odoo installs with `mail`): a file of a task AI chat is never put in a letter |
 | `woow_ai_task_document_management` | 18.0.1.0.0 | Bridge, installed automatically with `woow_document_management`: a filing rule never copies a file of a task AI chat into a document folder |
 | `woow_ai_task_paas` | 18.0.1.0.0 | Bridge, installed automatically with the PaaS platform (`woow_paas_platform`): the customer AI chat on the `/woow` task page, the platform's old task AI switched off (not deleted), task chat members following workspace membership and service bindings, the project AI settings for project managers only ([docs/PAAS.md](docs/PAAS.md)) |
+| `woow_ai_task_crm` | 18.0.1.0.0 | AI form consultant for CRM leads (a template): installed only on purpose, switched off until a system administrator enables it |
 
 ## Alignment (contract v1.2)
 
@@ -43,7 +44,7 @@ Discuss AI, Project AI and Live Chat AI are configured and run the same
 way through one written contract: connection and assistant fields, roles
 and menus, how a turn runs, the n8n and LiteLLM wire formats, what people
 see, logs and usage, `neutralize.sql`, the zh_TW glossary and the upgrade
-rules. **This release (18.0.1.0.0) implements contract v1.2.** Its package
+rules. **This release (18.0.1.1.0) implements contract v1.2.** Its package
 is in this repository, copied byte for byte: `docs/CONTRACT.md` and
 `woow_ai_task/tests/contract/` (never edited here; a new contract version
 replaces both). `woow_ai_task/tests/test_contract.py` runs its fourteen
@@ -103,13 +104,28 @@ chat).
   tab is blocked, the backend failed, or the question waited too long: the
   customer gets the error message). An open To-Do is reused; once it is
   done, the next such message schedules a new one.
+- **AI form consultant** (「詢問 AI 顧問」, off by default): staff with Project
+  rights press *Ask the AI Consultant* on a record of another module (a CRM
+  lead with `woow_ai_task_crm`; PaaS cloud services later, through the PaaS
+  bridge) and land in the internal AI chat of a consultation task, in a chat
+  window; *New Topic* always starts a new task. The AI gets a capped summary
+  of the fields the consultant module lists, read with the asker's own
+  rights, as data, and only reads. Every record sent to a chat's AI is
+  recorded; from then on only people who can read every one of them (and the
+  task's current consulted records) use that chat. One *AI Consultant
+  Settings* row per kind of record (system administrators): its consultation
+  project, a role prompt, where the data goes, warnings, and a preview, by
+  name, of who would leave which chats before it is enabled.
 - **What the AI gets**: the assistant's prompt, the project text of its tab
   (the customer chat never gets the internal one; the internal one only
   while every person of the chat can read the project, as the internal chat
   requires) and a short task summary read with the asker's own rights
   (customer chat: the portal-readable task fields, without related tasks;
   internal chat: related records every member can read); never the chatter.
-  The customer chat takes no log note (its customers read everything in it).
+  Instructions come first, then one data section between two markers tagged
+  with 8 random characters per request; every value of it is cleaned, so no
+  value can close it. The customer chat takes no log note (its customers read
+  everything in it).
 - **Durable reply queue** in the cron process, typing indicator, files both
   ways (images inline, documents as file parts or signed links; the files of
   one answer: 45 seconds and 100 MB together, a failed download stays a
@@ -181,6 +197,11 @@ check first (the *Readiness* column of *AI Connections* and the project's
 Translations: the module's zh_TW strings are loaded at install; an
 administrator's own translations of this module's strings are overwritten
 when it is upgraded.
+
+18.0.1.1.0 adds the AI form consultant, switched off: from 18.0.1.0.0,
+`-u woow_ai_task` adds its two tables and one task column, and nothing stops
+answering (see *AI form consultant* below for enabling it and for the
+rollback).
 
 ### Cron workers next to Discuss AI
 
@@ -337,6 +358,91 @@ URL and key and are archived, n8n "Safe for Customers" is cleared, push keys
 are revoked; each table is checked first (`to_regclass`), so a database where
 the module's tables are missing can still be neutralized.
 
+## AI form consultant (optional)
+
+- **Off by default.** Until a system administrator enables a kind of record
+  in *AI Consultant Settings* (Project > Configuration > Project AI), nothing
+  changes in membership, reading, buttons, reply links or downloads. The
+  upgrade to 18.0.1.1.0 itself changes one thing only: the framing of the
+  system prompt's data section.
+- **CRM** (`woow_ai_task_crm`): install it on purpose, from the command line
+  (`-i woow_ai_task_crm`) or when no cron is running. It installs `crm` too,
+  with Odoo's own CRM bridges of the apps already there (`website_crm`,
+  `crm_livechat`, …). Once installed, keep it in every image that serves the
+  database. Its setting is seeded switched off (and never re-created by an
+  upgrade once deleted). **Where `crm` is not installed yet, installing it
+  makes every existing employee a Sales Administrator**: Odoo's Sales app adds
+  that group to the *Default User Template*, and Odoo gives every group added
+  to the template to all existing internal users. Check whether `crm` is
+  installed first; if it comes with this module, review the Sales rights
+  before enabling the consultant (otherwise everyone reads every lead).
+- **Enabling** (per site, with the owner's approval): choose the
+  consultation project (its internal AI assistant answers), read the
+  warnings and *Data Goes To*, give the salespeople who will use it the
+  Project user rights, press *Preview the Impact* (who would leave which
+  task AI chats, by name), then tick *Enable the AI Consultant*.
+- **Task names carry the record's name**, e.g. 「AI 顧問：大安區廚房翻新」 (read
+  with the asker's own rights, cleaned, at most 80 characters; set once, a
+  later rename of the record does not rename the task). Everyone who can read
+  the consultation project sees them, colleagues who cannot read the record
+  included, and names typed by website visitors (a web form or Live Chat
+  lead) appear as typed: the owner accepted both. With Odoo's *Default User
+  Template* every employee is a Project Administrator (Odoo's Project app adds
+  that group to it), so on most sites that is every employee: restrict the
+  Project rights, or choose a consultation project only some people can read
+  (invited users), where it matters.
+- **Multi-company**: the consultation project's company must be one of the
+  allowed companies of every person who will use the consultant (otherwise
+  they are told to ask a project manager). With *Project From the Record* the
+  setting cannot show the warnings that depend on one project.
+- **Who may use a consultation chat**: people who can read the task, its
+  project (internal chat) and every record the chat's AI got or the task now
+  links (records of enabled kinds). A reassigned, merged or deleted record
+  updates the members at once; a record-rule change, at the hourly sweep
+  (reading is cut at once anyway). A deleted record closes its chats for
+  everyone; their history stays. The record a button press is about is
+  recorded for the chat at once (not only when its AI gets it), so unlinking
+  or deleting it, or disabling the setting, never opens the chat.
+- **Where the data goes**: a record's data goes only to the AI of its
+  consultation project (the one *Data Goes To* shows), or of the project the
+  record itself chooses; a task linked to it in another project (created or
+  moved there) gets none, while its links still decide who may use its chats.
+  Only system administrators set the links, on create too. A setting that was
+  ever enabled cannot be deleted, only disabled.
+- **n8n**: when the internal AI connection is n8n, make sure the workflow
+  keeps no memory across conversations and never lets the AI decide to fetch
+  URLs; n8n stores the data of every execution, the record summaries
+  included. With *Log Request Content* on, the call logs keep the whole
+  request (system administrators, 30 days).
+- **Consultant modules** (bridges): `readable_query` answers must be
+  uncorrelated SQL without NULLs (a NULL never makes a record readable, the
+  rule embeds `NOT COALESCE(x IN R, FALSE)`); `candidates` always arrives as an
+  SQL sub-select; a module that overrides the values hook instead of declaring
+  customer fields overrides the tabs hook too. See 「穩定介面（橋接 API）」.
+- **Reinstalling the CRM template**: if its seeded setting was deleted and
+  replaced by another one for leads, delete the replacement before installing
+  `woow_ai_task_crm` again (one setting per kind of record).
+- **Upgrade and rollback**: `-u woow_ai_task` from 18.0.1.0.0 adds two
+  tables, one task column (no table rewrite), views, a menu and access rows;
+  nothing is removed, no migration script. The 18.0.1.1.0 image may serve the
+  database only once `-u woow_ai_task` has finished (a task read needs the new
+  column). Roll back by restoring the database and filestore snapshot; never
+  with an older image and `-u` (it drops the ledger, the settings and the
+  column). To take the CRM template away, uninstall `woow_ai_task_crm` on an
+  image that has it: the records already sent keep deciding through Odoo's
+  own lead rules.
+- **An image without the code still opens tasks and leads**: the task form's
+  「AI 顧問對象」 page, the lead form's buttons and smart button and the
+  task's lead field are added in Python (`_get_view`), not by stored views,
+  so an older release or a rollback image that lacks the consultant (or the
+  CRM template) shows those forms without them instead of failing on unknown
+  fields; the settings menu hides itself without its model. The consultant's
+  gate and data need its code, like the rest of Project AI: keep the modules
+  in every image that serves the database.
+
+Details (Traditional Chinese): [docs/PROJECT.md](docs/PROJECT.md) 「AI 顧問」; the
+API for consultant modules: 「穩定介面（橋接 API）」 there.
+
 ## Protocol and details
 
 - Wire format of both backends, the push API, signed attachment URLs, reply
@@ -345,6 +451,15 @@ the module's tables are missing can still be neutralized.
 - On the PaaS platform (Traditional Chinese): [docs/PAAS.md](docs/PAAS.md).
 
 ## Privacy and security
+
+- AI form consultant: a record's data reaches the AI only inside the cleaned,
+  tagged data section, read with the asker's own rights, only the fields its
+  consultant module lists (never contact details, addresses, the chatter and
+  its log notes, files or activities), names of related records only those every
+  other person of the chat can read. The AI only reads. Links in its replies
+  stay clickable, and files are downloaded, only for this site's hosts and
+  the hosts the consulted records allow (and, for files, the connection's
+  download domains too).
 
 - Task chats are private group conversations: members read them, only while
   they can read the task now (the internal chat: and its project); so do

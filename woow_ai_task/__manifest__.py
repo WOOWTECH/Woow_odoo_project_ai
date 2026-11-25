@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Project AI',
-    'version': '18.0.1.0.0',
+    'version': '18.0.1.1.0',
     'category': 'Services/Project',
     'summary': 'Two AI conversations on every task (internal, customer on the portal), answered by n8n or LiteLLM',
     'description': """
@@ -53,6 +53,15 @@ Odoo modules only; it installs next to the Discuss AI modules
   (45 s and 100 MB per answer), Markdown replies, push API (n8n "skip, then
   push"), call logs and a permanent monthly usage per project and tab (a
   reference for invoicing by hand, no billing)
+* AI form consultant (「詢問 AI 顧問」, off by default): staff with Project
+  rights ask the internal AI of a consultation task about a record of another
+  module (a CRM lead with woow_ai_task_crm). The AI gets a capped summary of
+  the listed fields, read with the asker's own rights, framed as data; the
+  records sent are recorded per chat, and from then on only people who can
+  read every one of them (and the task's current consulted records) use that
+  chat. "AI Consultant Settings" (system administrators): one per kind of
+  record, its consultation project and role prompt, a preview of who would
+  leave which chats before enabling. The AI only reads
 * Settings under Project > Configuration > Project AI. With
   woow_odoo_portal_discuss, the bridge woow_ai_task_portal_discuss (and
   woow_ai_task_portal_notification with the portal notification centre) is
@@ -83,6 +92,7 @@ See README.md and docs/PROTOCOL.md in the repository.
         'views/ai_job_views.xml',
         'views/ai_call_log_views.xml',
         'views/ai_usage_views.xml',
+        'views/consult_profile_views.xml',
         'views/menus.xml',
         'views/project_project_views.xml',
         'views/project_task_views.xml',

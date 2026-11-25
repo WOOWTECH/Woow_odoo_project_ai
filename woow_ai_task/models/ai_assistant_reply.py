@@ -80,13 +80,15 @@ class WoowProjectAiAssistantReply(models.Model):
             raise media.DownloadRefused('the files of this reply are too large together')
         return min(max_bytes, budget['bytes'])
 
-    def _fetch_file(self, url, name=None, budget=None):
+    def _fetch_file(self, url, name=None, budget=None, domains=None):
         """Download an allowlisted file -> {'name', 'raw', 'mimetype'}; raises
         DownloadRefused. ``budget`` (see _reply_budget): shared by the files of
-        one reply, its bytes are counted down."""
+        one reply, its bytes are counted down. ``domains``: the allowlist
+        (default: the AI connection's download domains), redirects included."""
         self.ensure_one()
         max_bytes = self._budget_bytes(budget, self._max_download_bytes())
-        raw, final_url = media.download(url, self._download_domains(), max_bytes,
+        allowed = domains if domains is not None else self._download_domains()
+        raw, final_url = media.download(url, allowed, max_bytes,
                                         deadline=budget['deadline'] if budget else None)
         if budget is not None:
             budget['bytes'] -= len(raw)
@@ -135,6 +137,12 @@ class WoowProjectAiAssistantReply(models.Model):
         max_bytes = self._max_download_bytes()
         if budget is None:
             budget = self._reply_budget()
+        link_hosts = channel._woow_project_ai_link_hosts(self) if channel else None
+        if link_hosts is not None:
+            # a consulted chat (records were sent to the AI): a URL the model wrote is downloaded only from a
+            # host both the AI connection's download domains and the chat's link hosts allow; any other stays a
+            # link (rendered as text unless its host is allowed). data: images and base64 files need no request
+            domains = media.intersect_domains(domains, link_hosts)
 
         def replace_data_uri(match):
             declared = (match.group('type') or match.group('type2') or '').lower()
@@ -173,7 +181,7 @@ class WoowProjectAiAssistantReply(models.Model):
             if len(files) >= MAX_FILES_PER_REPLY or not media.url_allowed(url, domains):
                 return match.group(0)
             try:
-                file = self._fetch_file(url, budget=budget)
+                file = self._fetch_file(url, budget=budget, domains=domains)
             except media.DownloadRefused as e:
                 _logger.info("Project AI assistant %s: file not attached (%s)", self.id, e)
                 return match.group(0)
@@ -208,7 +216,7 @@ class WoowProjectAiAssistantReply(models.Model):
                 try:
                     if not media.url_allowed(url, domains):
                         raise media.DownloadRefused('domain not allowed')
-                    files.append(self._fetch_file(url, name=name, budget=budget))
+                    files.append(self._fetch_file(url, name=name, budget=budget, domains=domains))
                 except Exception as e:  # noqa: BLE001 - DownloadRefused, or anything else: the file stays a link
                     if isinstance(e, media.DownloadRefused):
                         _logger.info("Project AI assistant %s: attachment kept as a link (%s)", self.id, e)
@@ -218,7 +226,6 @@ class WoowProjectAiAssistantReply(models.Model):
                     extra_links.append('[%s](%s)' % ((name or media.filename_from_url(url)).replace(']', ''), url))
         if extra_links:
             text = (text + '\n\n' + '\n'.join('- %s' % link for link in extra_links)).strip()
-        link_hosts = channel._woow_project_ai_link_hosts(self) if channel else None
         try:
             html = markdown_to_html(text, link_hosts=link_hosts)
         except Exception as e:  # noqa: BLE001 - the renderer never loses a reply: escaped plain text

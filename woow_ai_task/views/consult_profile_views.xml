@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 「AI 顧問設定」 (system administrators only): one row per consulted kind of record, seeded switched off by its
+         consultant module (for example woow_ai_task_crm). Enabling one is a decision to take after the preview. -->
+    <record id="view_woow_project_ai_consult_profile_list" model="ir.ui.view">
+        <field name="name">woow.project.ai.consult.profile.list</field>
+        <field name="model">woow.project.ai.consult.profile</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="model_id"/>
+                <field name="enabled"/>
+                <field name="project_id"/>
+                <field name="data_destination"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_woow_project_ai_consult_profile_form" model="ir.ui.view">
+        <field name="name">woow.project.ai.consult.profile.form</field>
+        <field name="model">woow.project.ai.consult.profile</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_woow_project_ai_consult_preview" type="object" string="Preview the Impact"
+                            class="btn-secondary" invisible="not id"/>
+                </header>
+                <sheet>
+                    <div class="alert alert-warning" role="alert" invisible="not warning">
+                        <field name="warning" readonly="1" nolabel="1"/>
+                    </div>
+                    <div class="alert alert-info" role="status">
+                        <p>
+                            When enabled, only the colleagues and customers who can read these records can use the
+                            task AI chats linked to them; the others are removed and no longer see the earlier
+                            answers either.
+                        </p>
+                        <p class="mb-0">
+                            Only colleagues with the user rights of the Project app see "Ask the AI Consultant";
+                            those who cannot read the consultation project are told to ask a project manager to add
+                            them to it.
+                        </p>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="model_id" readonly="id" options="{'no_create': True, 'no_open': True}"/>
+                            <field name="enabled"/>
+                            <field name="was_enabled" invisible="not was_enabled"/>
+                        </group>
+                        <group>
+                            <field name="project_from_record" invisible="1"/>
+                            <field name="project_id" invisible="project_from_record"
+                                   options="{'no_create': True}"/>
+                            <field name="data_destination"/>
+                        </group>
+                    </group>
+                    <group string="Consultant Role" name="woow_project_ai_consult_role">
+                        <field name="role_prompt" nolabel="1" colspan="2"
+                               placeholder="What the internal AI should do with these records (at most 1,000 characters)"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_woow_project_ai_consult_profile" model="ir.actions.act_window">
+        <field name="name">AI Consultant Settings</field>
+        <field name="res_model">woow.project.ai.consult.profile</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No kind of record can be consulted yet</p>
+            <p>An AI consultant module (for example "Project AI - CRM") adds its kind of record here, switched off.</p>
+        </field>
+    </record>
+
+    <record id="view_woow_project_ai_consult_preview_form" model="ir.ui.view">
+        <field name="name">woow.project.ai.consult.preview.form</field>
+        <field name="model">woow.project.ai.consult.preview</field>
+        <field name="arch" type="xml">
+            <form>
+                <field name="profile_id" invisible="1"/>
+                <field name="result" readonly="1" nolabel="1"/>
+                <footer>
+                    <button string="Close" special="cancel" class="btn-primary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>
