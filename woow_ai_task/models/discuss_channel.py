@@ -521,8 +521,10 @@ class DiscussChannel(models.Model):
                     continue
                 if field.type == 'many2one':
                     column = SQL.identifier(field.name)
-                    candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL AND id IN %s)", column,
-                                     column, chats_of_tasks)
+                    # the candidates: every linked record (its index), not only those of tasks with chats: a join
+                    # with discuss_channel here made the plan depend on its statistics (stale ones, all task ids
+                    # NULL right after the install's ANALYZE, gave a nested loop re-running it per record)
+                    candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL)", column, column)
                     readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
                     if readable is None:
                         parts.append(SQL("SELECT id FROM project_task WHERE %s IS NOT NULL AND id IN %s", column,
@@ -535,8 +537,7 @@ class DiscussChannel(models.Model):
                     relation, task_column, record_column = (SQL.identifier(field.relation),
                                                             SQL.identifier(field.column1),
                                                             SQL.identifier(field.column2))
-                    candidates = SQL("(SELECT %s FROM %s WHERE %s IN %s)", record_column, relation, task_column,
-                                     chats_of_tasks)
+                    candidates = SQL("(SELECT %s FROM %s)", record_column, relation)  # (as above)
                     readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
                     if readable is None:
                         parts.append(SQL("SELECT %s FROM %s WHERE %s IN %s", task_column, relation, task_column,
