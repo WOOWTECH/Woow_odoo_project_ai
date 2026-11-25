@@ -13,12 +13,16 @@ from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tests.common import new_test_user, tagged
 from odoo.tools import SQL, mute_logger
 
+from odoo.addons.base.models.ir_model import MODULE_UNINSTALL_FLAG
+
 from odoo.addons.woow_ai_task.models.consult_mixin import (
     LEDGER, PROFILE, consult_keys, consult_state, field_rule_problem, readable_ids)
+from odoo.addons.woow_ai_task.models import consult_mixin as consult_mixin_module
+from odoo.addons.woow_ai_task.models import consult_profile as consult_profile_module
 from odoo.addons.woow_ai_task.models.consult_profile import TABLES_READY_KEY
 from odoo.addons.woow_ai_task.models.discuss_channel import with_sync
 
-from .consult_common import SECRET_TAG, StandinCase, assert_consult_lockstep, assert_field_rules
+from .consult_common import SECRET_TAG, StandinCase, assert_consult_lockstep, assert_field_rules, standin
 
 
 @tagged('post_install', '-at_install', 'woow_ai_task', 'woow_ai_task_consult')
@@ -41,7 +45,7 @@ class TestConsultState(StandinCase):
     def test_state_follows_profiles_in_the_same_transaction(self):
         profile = self.profile_for('res.partner')
         self.assertFalse(consult_state(self.env).enabled_models)
-        profile.write({'enabled': True, 'project_id': self.consult_project.id})
+        profile.write({'enabled': True, 'project_id': self.consult_project.id, 'no_data_tools': True})
         state = consult_state(self.env)
         self.assertEqual(state.enabled_models, frozenset({'res.partner'}))
         self.assertTrue(state.used)
@@ -135,7 +139,11 @@ class TestConsultProfile(StandinCase):
             profile.write({'enabled': True})  # no consultation project
         with self.assertRaises(ValidationError):
             profile.write({'role_prompt': 'x' * 1001})
-        profile.write({'role_prompt': 'x' * 1000, 'project_id': self.consult_project.id, 'enabled': True})
+        with self.assertRaises(ValidationError) as caught:  # (Odoo's assertRaises: in a savepoint)
+            profile.write({'project_id': self.consult_project.id, 'enabled': True})
+        self.assertIn('no tools that read company data', str(caught.exception))
+        profile.write({'role_prompt': 'x' * 1000, 'project_id': self.consult_project.id, 'enabled': True,
+                       'no_data_tools': True})
         self.assertTrue(profile.was_enabled)
         # once enabled, a setting is disabled, never deleted (deleting it would forget was_enabled)
         profile.write({'enabled': False})
@@ -151,7 +159,7 @@ class TestConsultProfile(StandinCase):
         project = self.env['project.project'].create({'name': 'Consult without AI'})
         profile.project_id = project
         self.assertIn('cannot answer now', profile.warning)
-        self.assertIn("carry the record's name", profile.warning, 'N6 B: task names carry record names')
+        self.assertIn("carry the record's name", profile.warning, 'task names carry record names')
         project.write({'woow_project_ai_internal_assistant_id': self.internal_n8n.id, 'privacy_visibility': 'portal',
                        'woow_project_ai_customer_assistant_id': self.customer_ai.id})
         profile.invalidate_recordset(['warning'])
@@ -177,8 +185,91 @@ class TestConsultProfile(StandinCase):
         self.assertIn('n8n', profile.data_destination)
         self.assertNotIn('n8n.example.com', profile.data_destination)
 
-    def test_enabling_runs_the_sweep_and_forgets_readable(self):
+    def test_enabling_needs_the_confirmation_and_pins_the_destination(self):
         profile = self.profile_for('res.partner', project_id=self.consult_project.id)
+        self.assertFalse(profile.no_data_tools, 'off by default')
+        with self.assertRaises(ValidationError) as caught:
+            profile.write({'enabled': True})
+        self.assertIn('no tools that read company data', str(caught.exception))
+        profile.write({'enabled': True, 'no_data_tools': True})
+        self.assertTrue(profile.no_data_tools)
+        self.assertFalse(profile.destination_changed)
+        self.assertEqual(profile.destination_fingerprint, 'assistant:%s;connection:%s;kind:openai;host:llm.example.com'
+                         % (self.internal_ai.id, self.internal_ai.connection_id.id))
+        # the project's internal assistant changes (project managers choose it): paused until confirmed again
+        self.consult_project.woow_project_ai_internal_assistant_id = self.internal_n8n
+        profile.invalidate_recordset()
+        self.assertTrue(profile.destination_changed)
+        self.assertFalse(profile.no_data_tools, 'a new destination clears the confirmation')
+        self.assertIn('Where the record data goes changed', profile.warning)
+        self.assertIn('(now: Internal Workflow (n8n', profile.warning)
+        with self.assertRaises(ValidationError):
+            profile.write({'project_id': self.consult_project.id})  # kept enabled without the confirmation
+        profile.no_data_tools = True  # a system administrator checked the new AI
+        self.assertFalse(profile.destination_changed)
+        self.assertTrue(profile.destination_fingerprint.endswith(';kind:n8n;host:n8n.example.com'))
+        # the connection's backend host changes: paused again
+        self.internal_n8n.connection_id.write({'endpoint_url': 'https://other.example.net/webhook/i',
+                                               'api_key': 'other-backend-key'})
+        profile.invalidate_recordset()
+        self.assertTrue(profile.destination_changed)
+        # no assistant at all is a destination as well
+        self.consult_project.woow_project_ai_internal_assistant_id = False
+        profile.no_data_tools = True
+        self.assertEqual(profile.destination_fingerprint, 'none')
+        self.consult_project.woow_project_ai_internal_assistant_id = self.internal_ai
+        profile.invalidate_recordset()
+        self.assertTrue(profile.destination_changed)
+        # unticking it is refused while enabled; disabled, the setting may stay unconfirmed
+        with self.assertRaises(ValidationError):
+            profile.write({'no_data_tools': False, 'enabled': True})
+        profile.write({'enabled': False, 'no_data_tools': False})
+        self.assertFalse(profile.destination_fingerprint)
+        self.assertFalse(profile.destination_changed, 'only an enabled setting is paused')
+
+    def test_notes_are_off_by_default_and_said_so(self):
+        profile = self.enable('res.partner')
+        self.assertFalse(profile.send_notes)
+        self.assertFalse(consult_state(self.env).notes_models)
+        self.assertIn('Notes: not sent', profile.data_destination)
+        self.assertIn('The Notes are not sent', profile.warning)
+        profile.send_notes = True
+        profile.invalidate_recordset(['data_destination', 'warning'])
+        self.assertIn('Notes: sent, contact details masked', profile.data_destination)
+        self.assertIn('E-mail addresses, phone numbers and IP addresses are masked', profile.warning)
+        self.assertEqual(consult_state(self.env).notes_models, frozenset({'res.partner'}))
+        # a kind of record without long free texts says nothing of Notes
+        tags = self.enable('project.tags')
+        self.assertNotIn('Notes', tags.data_destination)
+        self.assertNotIn('The Notes', tags.warning)
+
+    def test_rights_lines_count_and_follow_default_access_rights(self):
+        profile = self.profile_for('res.partner', project_id=self.consult_project.id)
+        employees = self.env['res.users'].search([('share', '=', False)])
+        managers = employees.filtered(lambda user: user.has_group('project.group_project_manager'))
+        self.assertTrue(managers)
+        self.assertIn('Employees who are Project Administrators (they read every consultation task): %s of %s.'
+                      % (len(managers), len(employees)), profile.warning)
+        self.assertIn('Project Administrators read every task whatever the project', profile.warning)
+        Param = self.env['ir.config_parameter'].sudo()
+        Param.set_param('base_setup.default_user_rights', 'True')
+        profile.invalidate_recordset(['warning'])
+        self.assertIn('Default Access Rights (Settings > Users) is on', profile.warning)
+        Param.set_param('base_setup.default_user_rights', False)
+        profile.invalidate_recordset(['warning'])
+        self.assertNotIn('Default Access Rights', profile.warning)
+
+    def test_enabled_once_setting_goes_only_with_its_module(self):
+        profile = self.enable('res.partner')
+        profile.enabled = False
+        with self.assertRaises(UserError):
+            profile.unlink()
+        # uninstalling the module that made it (Odoo deletes module data with this flag)
+        profile.with_context(**{MODULE_UNINSTALL_FLAG: True}).unlink()
+        self.assertFalse(profile.exists())
+
+    def test_enabling_runs_the_sweep_and_forgets_readable(self):
+        profile = self.profile_for('res.partner', project_id=self.consult_project.id, no_data_tools=True)
         cron = self.env.ref('woow_ai_task.ir_cron_project_ai_sync_members')
         Cron = type(self.env['ir.cron'])
         Channel = type(self.env['discuss.channel'])
@@ -210,8 +301,10 @@ class TestConsultProfile(StandinCase):
         self.assertFalse(capped)
         self.assertEqual({partner.name: chats for partner, chats in leaving.items()}, {'Staff Sam': 1})
         text = profile._woow_project_ai_consult_preview_text()
-        self.assertIn('Staff Sam: 1 chats', text)
+        self.assertIn('- Staff Sam: 1 chat', text.split('\n'))
         self.assertNotIn('Both Bea', text)
+        with patch.object(consult_profile_module, 'PREVIEW_MAX_NAMES', 0):
+            self.assertIn('… and 1 more person.', profile._woow_project_ai_consult_preview_text())
         action = profile.action_woow_project_ai_consult_preview()
         self.assertEqual(action['res_model'], 'woow.project.ai.consult.preview')
         self.assertEqual(action['target'], 'new')
@@ -391,7 +484,7 @@ class TestConsultTaskPage(StandinCase):
         self.assertIn('Contact: Lead Partner A (primary)', lines)
         self.assertIn('Project Tags: Open Tag (other) (not enabled: the AI does not read it)', lines)
         self.assertIn('Consulted before: Contact: Earlier Partner', lines)
-        self.assertIn('2 more records you cannot read', lines)
+        self.assertIn('Records you cannot read: 2', lines)
         for hidden in ('Hidden Partner B', SECRET_TAG):
             self.assertNotIn(hidden, summary)
         self.assertTrue(self.task.with_user(self.staff).woow_project_ai_consult_show)
@@ -408,6 +501,54 @@ class TestConsultTaskPage(StandinCase):
         self.assertTrue(task.with_user(self.staff).woow_project_ai_consult_show, "a profile's project")
         # a link (here the fixture task's tag: project.tags stands in for a consulted model)
         self.assertTrue(self.task.with_user(self.staff).woow_project_ai_consult_show)
+
+    def test_page_fields_of_many_tasks_read_the_ledger_once(self):
+        self.enable('res.partner')
+        task2 = self.env['project.task'].create({'name': 'Second', 'project_id': self.project.id,
+                                                 'user_ids': [Command.set([self.staff.id])]})
+        chat1 = self.open_tab(self.staff, 'internal')
+        chat2 = self.open_tab(self.staff, 'internal', task=task2)
+        earlier = self.env['res.partner'].create({'name': 'Earlier Partner'})
+        self.record(chat1, ('res.partner', earlier.id))
+        self.record(chat2, ('res.partner', self.partner_b.id))
+        Task = type(self.env['project.task'])
+        original = Task._woow_project_ai_consult_ledger_pairs_by_task
+        calls = []
+
+        def spy(tasks):
+            calls.append(len(tasks))
+            return original(tasks)
+
+        tasks = (self.task | task2).with_user(self.staff)
+        tasks.invalidate_recordset(['woow_project_ai_consult_show', 'woow_project_ai_consult_summary'])
+        with patch.object(Task, '_woow_project_ai_consult_ledger_pairs_by_task', spy):
+            rows = {row['id']: row for row in tasks.read(['woow_project_ai_consult_show',
+                                                          'woow_project_ai_consult_summary'])}
+        self.assertEqual(calls, [2, 2], 'one ledger query per field for the whole recordset')
+        self.assertIn('Consulted before: Contact: Earlier Partner',
+                      rows[self.task.id]['woow_project_ai_consult_summary'])
+        self.assertEqual(rows[task2.id]['woow_project_ai_consult_summary'], 'Records you cannot read: 1')
+        self.assertTrue(rows[task2.id]['woow_project_ai_consult_show'])
+
+    def test_rename_leaves_the_old_name_nowhere_the_module_wrote_it(self):
+        chat = self.open_tab(self.staff, 'internal')
+        self.post(chat, self.staff, 'question')
+        self.task.message_post(body='a note', message_type='comment', subtype_xmlid='mail.mt_note')
+        old = self.task.name
+        self.env['project.task']._woow_project_ai_consult_rename({self.task.id: 'AI consultation: Contact #7'})
+        self.assertEqual(self.task.name, 'AI consultation: Contact #7')
+        self.assertIn('AI consultation: Contact #7', chat.sudo().name)
+        self.assertNotIn(old, chat.sudo().name)
+        self.env.flush_all()
+        self.env.cr.execute("""
+            SELECT count(*) FROM mail_message
+             WHERE record_name LIKE %s
+               AND ((model = 'discuss.channel' AND res_id = %s) OR (model = 'project.task' AND res_id = %s))""",
+                            ['%%%s%%' % old, chat.id, self.task.id])
+        self.assertEqual(self.env.cr.fetchone()[0], 0)
+        self.assertFalse(self.env['mail.tracking.value'].sudo().search([
+            ('mail_message_id.model', '=', 'project.task'), ('mail_message_id.res_id', '=', self.task.id),
+            ('old_value_char', '=', old)]), 'no tracking line keeps the old name')
 
     def test_field_rules(self):
         assert_field_rules(self, [self.staff, self.manager, self.employee], models=['res.partner', 'project.tags'])
@@ -531,6 +672,68 @@ class TestConsultGate(StandinCase):
         rule = self.env['res.users'].sudo().browse(self.admin.id).woow_project_ai_readable_rule
         self.assertIn('woow_project_ai_consult_sent', rule['code'])
         self.assertIn(['project.task', 'partner_id'], rule['flush'])
+        # a member list or a point check reads the ledger rows and links of its own chats only
+        Channel = self.env['discuss.channel']
+        domain = Channel._woow_project_ai_consult_rule_domain(self.staff, [self.env.company.id],
+                                                              restrict_to=[chat.id])
+        code = Channel.sudo()._search(domain).select().code
+        self.assertIn('channel_id = ANY', code)
+        self.assertNotIn('EXISTS', code.upper())
+
+    def test_a_null_in_a_readability_source_never_opens_a_chat(self):
+        """A readability source whose answer holds a NULL (an outer join): `x NOT IN R` would be NULL and open the
+        chat; the rule's NOT COALESCE(x IN R, FALSE) and the predicate's x IN R keep it closed."""
+        def with_null(model, user, tab, candidates):
+            if not user or not user._is_internal():
+                return None
+            return SQL("(SELECT NULL::int UNION ALL SELECT id FROM project_tags WHERE name->>'en_US' != %s)",
+                       SECRET_TAG)
+
+        chat = self.chat_with(self.staff, self.both)
+        self.post(chat, self.staff, 'question')
+        task2 = self.env['project.task'].create({'name': 'Second', 'project_id': self.project.id,
+                                                 'user_ids': [Command.set([self.staff.id, self.both.id])]})
+        chat2 = self.open_tab(self.staff, 'internal', task=task2)
+        self.open_tab(self.both, 'internal', task=task2)
+        self.post(chat2, self.staff, 'question two')
+        with standin(self, tag_readable=with_null):
+            self.enable('project.tags')
+            self.record(chat, ('project.tags', self.secret_tag.id))
+            self.record(chat2, ('project.tags', self.open_tag.id))
+            self.assertFalse(self.task.sudo()._woow_project_ai_user_allowed(self.staff, 'internal'))
+            self.assertTrue(task2.sudo()._woow_project_ai_user_allowed(self.staff, 'internal'))
+            assert_consult_lockstep(self, chat | chat2, [self.staff, self.both, self.admin])
+            # a link too
+            self.link(task2, tag_ids=[Command.link(self.secret_tag.id)])
+            self.assertFalse(task2.sudo()._woow_project_ai_user_allowed(self.staff, 'internal'))
+            assert_consult_lockstep(self, chat2, [self.staff, self.both, self.admin])
+
+    def test_a_failing_readability_source_fails_closed_and_logs_once(self):
+        chat = self.chat_with(self.staff, self.both)
+        self.post(chat, self.staff, 'question')
+        self.enable('project.tags')
+        self.record(chat, ('project.tags', self.open_tag.id))
+        task = self.task.sudo()
+        self.assertTrue(task._woow_project_ai_user_allowed(self.staff, 'internal'))
+        secret = 'NAME-OF-A-' + 'RECORD'
+
+        def raising(model, user, tab, candidates):
+            raise AccessError(secret)
+
+        def wrong_type(model, user, tab, candidates):
+            return 'SELECT id FROM project_tags'  # neither SQL nor a Query
+
+        for label, source in (('raises', raising), ('wrong type', wrong_type)):
+            with self.subTest(label), standin(self, tag_readable=source), \
+                    patch.object(consult_mixin_module, '_query_errors_logged', set()), \
+                    self.assertLogs(consult_mixin_module.__name__, level='WARNING') as logs:
+                self.env['discuss.channel']._woow_project_ai_forget_readable()
+                self.assertFalse(task._woow_project_ai_user_allowed(self.staff, 'internal'))
+                self.assertFalse(task._woow_project_ai_user_allowed(self.staff, 'internal'))
+                assert_consult_lockstep(self, chat, [self.staff, self.both])
+            mine = [line for line in logs.output if 'cannot be checked for user %s;' % self.staff.id in line]
+            self.assertEqual(len(mine), 1, logs.output)
+            self.assertNotIn(secret, '\n'.join(logs.output))
 
     def test_first_consultation_is_not_hidden_by_a_cached_state(self):
         # the state was read (and cached) before the model's first ledger row: the row's key comes from the

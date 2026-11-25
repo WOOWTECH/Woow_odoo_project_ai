@@ -56,12 +56,21 @@ Odoo modules only; it installs next to the Discuss AI modules
 * AI form consultant (「詢問 AI 顧問」, off by default): staff with Project
   rights ask the internal AI of a consultation task about a record of another
   module (a CRM lead with woow_ai_task_crm). The AI gets a capped summary of
-  the listed fields, read with the asker's own rights, framed as data; the
-  records sent are recorded per chat, and from then on only people who can
-  read every one of them (and the task's current consulted records) use that
-  chat. "AI Consultant Settings" (system administrators): one per kind of
-  record, its consultation project and role prompt, a preview of who would
-  leave which chats before enabling. The AI only reads
+  the listed fields, read with the asker's own rights, framed as data; long
+  free texts (a lead's Notes) only while the setting sends them; e-mail
+  addresses, phone numbers and IP addresses in the free text sent are
+  masked. The records sent are recorded per chat, and from then on only
+  people who can read every one of them (and the task's current consulted
+  records) use that chat. "AI Consultant Settings" (system administrators):
+  one per kind of record, its consultation project and role prompt, the
+  confirmation that the AI behind it has no tools reading company data
+  (where the data goes is pinned: when it changes, the consultant pauses
+  until a system administrator confirms again), a preview of how many chats
+  each person would leave before enabling. The AI only reads. Consultation
+  tasks are named after the record and Project Administrators read every
+  task: while Default Access Rights (Settings > Users) is on, which is Odoo's
+  default, Odoo's default user template makes new employees Project
+  Administrators (the setting counts them)
 * Settings under Project > Configuration > Project AI. With
   woow_odoo_portal_discuss, the bridge woow_ai_task_portal_discuss (and
   woow_ai_task_portal_notification with the portal notification centre) is

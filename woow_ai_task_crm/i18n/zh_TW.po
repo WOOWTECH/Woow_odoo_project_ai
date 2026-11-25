@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 09:13+0000\n"
-"PO-Revision-Date: 2026-11-25 09:13+0000\n"
+"POT-Creation-Date: 2026-11-25 12:50+0000\n"
+"PO-Revision-Date: 2026-11-25 12:50+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -32,6 +32,26 @@ msgstr "詢問 AI 顧問"
 #: model:ir.model.fields,field_description:woow_ai_task_crm.field_crm_lead__woow_project_ai_consult_enabled
 msgid "Can Ask the AI Consultant"
 msgstr "可詢問 AI 顧問"
+
+#. module: woow_ai_task_crm
+#. odoo-python
+#: code:addons/woow_ai_task_crm/models/crm_lead.py:0
+msgid ""
+"Default Access Rights (Settings > Users) is on: new employees get the "
+"default user template's groups, with Odoo's template Sales Administrator too"
+" (they read every lead)."
+msgstr "「預設存取權限」（設定 > 使用者）開著：新員工會拿到預設使用者範本的群組，Odoo 的範本也包括「銷售：管理員」（讀得到每一筆商機）。"
+
+#. module: woow_ai_task_crm
+#. odoo-python
+#: code:addons/woow_ai_task_crm/models/crm_lead.py:0
+msgid ""
+"Employees who read every lead (Sales: \"All Documents\" or Administrator), "
+"and so may use the consultation chats of every lead: %(readers)s of "
+"%(employees)s."
+msgstr ""
+"讀得到每一筆商機的員工（銷售「使用者: 所有文件」或「管理員」），也就是能用每一筆商機的顧問對話的人：%(employees)s 位中有 "
+"%(readers)s 位。"
 
 #. module: woow_ai_task_crm
 #: model:ir.model,name:woow_ai_task_crm.model_crm_lead
@@ -68,3 +88,14 @@ msgid ""
 " Consultant\"). Only people who can read it may use the task's AI chats once"
 " the CRM consultant is enabled."
 msgstr "這張顧問任務諮詢的潛在商機或商機（由「詢問 AI 顧問」設定）。CRM 的 AI 顧問開啟後，只有讀得到它的人才能使用任務的 AI 對話。"
+
+#. module: woow_ai_task_crm
+#. odoo-python
+#: code:addons/woow_ai_task_crm/models/crm_lead.py:0
+msgid ""
+"Visitors type leads' names, company names and campaign, source and medium "
+"names too (web forms, Live Chat): e-mail addresses, phone numbers and IP "
+"addresses in them are masked, names and postal addresses are not."
+msgstr ""
+"商機名稱、公司名稱和行銷活動、來源、媒介名稱也可能是訪客打的（網站表單、Live Chat）：裡面的電子郵件、電話號碼和 IP "
+"位址會遮蔽，人名和地址不會。"

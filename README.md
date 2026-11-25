@@ -110,12 +110,16 @@ chat).
   bridge) and land in the internal AI chat of a consultation task, in a chat
   window; *New Topic* always starts a new task. The AI gets a capped summary
   of the fields the consultant module lists, read with the asker's own
-  rights, as data, and only reads. Every record sent to a chat's AI is
-  recorded; from then on only people who can read every one of them (and the
-  task's current consulted records) use that chat. One *AI Consultant
-  Settings* row per kind of record (system administrators): its consultation
-  project, a role prompt, where the data goes, warnings, and a preview, by
-  name, of who would leave which chats before it is enabled.
+  rights, as data, and only reads; long free texts (a lead's Notes) only
+  while the setting sends them, and e-mail addresses, phone numbers and IP
+  addresses in the free text sent are masked. Every record sent to a chat's
+  AI is recorded; from then on only people who can read every one of them
+  (and the task's current consulted records) use that chat. One *AI
+  Consultant Settings* row per kind of record (system administrators): its
+  consultation project, a role prompt, where the data goes (confirmed by a
+  system administrator, and paused when it changes), warnings, and a
+  preview of how many task AI chats each person would leave (by name)
+  before it is enabled.
 - **What the AI gets**: the assistant's prompt, the project text of its tab
   (the customer chat never gets the internal one; the internal one only
   while every person of the chat can read the project, as the internal chat
@@ -182,8 +186,8 @@ connections take it: restart Odoo). The module never changes it.
 
 ## Upgrading
 
-This is the first release: no site runs an earlier version, and there is
-nothing to migrate. What can keep an assistant from answering, and what to
+The first release (18.0.1.0.0) needed no migration, and neither does
+18.0.1.1.0 (below). What can keep an assistant from answering, and what to
 check first (the *Readiness* column of *AI Connections* and the project's
 *AI Assistants* page say why):
 
@@ -199,9 +203,11 @@ administrator's own translations of this module's strings are overwritten
 when it is upgraded.
 
 18.0.1.1.0 adds the AI form consultant, switched off: from 18.0.1.0.0,
-`-u woow_ai_task` adds its two tables and one task column, and nothing stops
-answering (see *AI form consultant* below for enabling it and for the
-rollback).
+`-u woow_ai_task` adds three tables (one of them is the impact preview's
+transient model) and one task column, and nothing stops answering; every
+value of the task summary the AI gets is now cleaned like the consulted
+records' (see *AI form consultant* below for that, for enabling it and for
+the rollback).
 
 ### Cron workers next to Discuss AI
 
@@ -344,7 +350,9 @@ uninstalls its five bridges (`woow_ai_task_portal_discuss`,
 `woow_ai_task_portal_notification`, `woow_ai_task_snailmail`,
 `woow_ai_task_document_management`, `woow_ai_task_paas`); the PaaS platform
 stays installed. The first four hold nothing but their code and one portal
-card, so there is nothing to restore. Only a module that depends on it and
+card, so there is nothing to restore. The CRM template is also uninstalled:
+its task-to-lead links go with it, while consultant settings and records-sent
+rows go with `woow_ai_task`. Only a module that depends on it and
 must stay installed (for example the PaaS platform, should it come to
 depend on it) blocks the uninstall: then forward-fix, or restore the
 database and filestore snapshot taken before the upgrade. On the PaaS
@@ -363,34 +371,63 @@ the module's tables are missing can still be neutralized.
 - **Off by default.** Until a system administrator enables a kind of record
   in *AI Consultant Settings* (Project > Configuration > Project AI), nothing
   changes in membership, reading, buttons, reply links or downloads. The
-  upgrade to 18.0.1.1.0 itself changes one thing only: the framing of the
-  system prompt's data section.
+  upgrade to 18.0.1.1.0 itself changes the system prompt's data section
+  only: its framing, and every value of the task summary is now cleaned like
+  the consulted records' (NFKC, so full-width punctuation and digits reach
+  the AI as ASCII; control and format characters dropped; runs of three or
+  more angle brackets collapsed).
 - **CRM** (`woow_ai_task_crm`): install it on purpose, from the command line
-  (`-i woow_ai_task_crm`) or when no cron is running. It installs `crm` too,
-  with Odoo's own CRM bridges of the apps already there (`website_crm`,
+  (`-i woow_ai_task_crm`) or when no cron is running, after `-u woow_ai_task`
+  has finished (it refuses to install before). It installs `crm` too, with
+  Odoo's own CRM bridges of the apps already there (`website_crm`,
   `crm_livechat`, …). Once installed, keep it in every image that serves the
-  database. Its setting is seeded switched off (and never re-created by an
-  upgrade once deleted). **Where `crm` is not installed yet, installing it
-  makes every existing employee a Sales Administrator**: Odoo's Sales app adds
-  that group to the *Default User Template*, and Odoo gives every group added
-  to the template to all existing internal users. Check whether `crm` is
-  installed first; if it comes with this module, review the Sales rights
-  before enabling the consultant (otherwise everyone reads every lead).
-- **Enabling** (per site, with the owner's approval): choose the
-  consultation project (its internal AI assistant answers), read the
-  warnings and *Data Goes To*, give the salespeople who will use it the
-  Project user rights, press *Preview the Impact* (who would leave which
-  task AI chats, by name), then tick *Enable the AI Consultant*.
+  database. Its setting is created switched off at install (a setting for
+  leads that exists already, such as one an administrator made, is adopted
+  and switched off). **Where `crm` is not installed yet, installing it can
+  make every existing employee a Sales Administrator** (who reads every
+  lead): while *Default Access Rights* (Settings > Users; the system
+  parameter `base_setup.default_user_rights`) is on, which is Odoo's default
+  on a database created on Odoo 17 or 18, Odoo gives every group added to
+  the *Default User Template* to all existing internal users, and the Sales
+  app adds that group to the template. Check first whether `crm` is
+  installed and whether Default Access Rights is on (Settings > Users, or
+  read the parameter in Settings > Technical > System Parameters); if `crm`
+  comes with this module, review the Sales rights before enabling the
+  consultant (otherwise everyone reads every lead). The setting's warnings
+  count the employees who read every lead.
+- **Enabling** (once per site, by a system administrator, with the site
+  owner's agreement): choose the consultation project (its internal AI
+  assistant answers), read the warnings and *Data Goes To*, check the AI
+  behind that project and tick *This connection has no tools that read
+  company data* (required), decide on *Send the Notes* (off by default),
+  give the salespeople who will use it the Project user rights, press
+  *Preview the Impact* (how many task AI chats each person would leave, by
+  name), then tick *Enable the AI Consultant*. Check *Default Access Rights*
+  and who is a Project Administrator first: the warnings count them.
 - **Task names carry the record's name**, e.g. 「AI 顧問：大安區廚房翻新」 (read
-  with the asker's own rights, cleaned, at most 80 characters; set once, a
-  later rename of the record does not rename the task). Everyone who can read
-  the consultation project sees them, colleagues who cannot read the record
-  included, and names typed by website visitors (a web form or Live Chat
-  lead) appear as typed: the owner accepted both. With Odoo's *Default User
-  Template* every employee is a Project Administrator (Odoo's Project app adds
-  that group to it), so on most sites that is every employee: restrict the
-  Project rights, or choose a consultation project only some people can read
-  (invited users), where it matters.
+  with the asker's own rights, cleaned, contact details masked, at most 80
+  characters; set once, a later rename of the record does not rename the
+  task). Everyone who can read the consultation project sees them,
+  colleagues who cannot read the record included, and names typed by
+  website visitors (a web form or Live Chat lead) appear: an accepted
+  trade-off. Project Administrators read every task whatever the project's
+  visibility (Odoo's own rules), and while *Default Access Rights* is on,
+  Odoo's *Default User Template* makes new employees Project Administrators
+  (the Project app adds that group to it). To keep the names from some
+  employees, remove the Project Administrator group from them; an
+  invited-users consultation project then also hides them from the other
+  Project users. Deleting a record renames its consultation tasks (and the
+  names stored on their messages) to 「AI 顧問：<kind> #<id>」; merging leads
+  renames the tasks of the merged ones after the lead that stays.
+- **Notes and other free text**: long free texts (a lead's Notes) go to the
+  AI only while *Send the Notes* is on (off by default). They hold whatever
+  was typed: on Live Chat leads (`/lead`, the chatbot) the whole
+  conversation, the visitor's e-mail and phone first; on web-form leads the
+  form's extra fields, and the visitor's IP address and browser when the
+  form's metadata is on. In every free text sent (the record's name, a lead's
+  company name, campaign, source and medium names too), e-mail addresses,
+  phone numbers and IP addresses are masked (`[email]`, `[phone]`, `[IP]`);
+  names and postal addresses are not: cheap patterns, not a guarantee.
 - **Multi-company**: the consultation project's company must be one of the
   allowed companies of every person who will use the consultant (otherwise
   they are told to ask a project manager). With *Project From the Record* the
@@ -407,38 +444,71 @@ the module's tables are missing can still be neutralized.
   consultation project (the one *Data Goes To* shows), or of the project the
   record itself chooses; a task linked to it in another project (created or
   moved there) gets none, while its links still decide who may use its chats.
-  Only system administrators set the links, on create too. A setting that was
-  ever enabled cannot be deleted, only disabled.
-- **n8n**: when the internal AI connection is n8n, make sure the workflow
-  keeps no memory across conversations and never lets the AI decide to fetch
-  URLs; n8n stores the data of every execution, the record summaries
+  A system administrator confirms it: ticking *This connection has no tools
+  that read company data* (required to enable) records the project's
+  internal assistant, its connection, the connection's kind and its backend
+  host. When any of them changes (a project manager chooses another internal
+  assistant, the connection's URL changes), the box clears, the setting shows
+  a red banner, the buttons refuse and no record data goes to any AI until a
+  system administrator checks the new AI and ticks it again. A system
+  administrator's own edit of the connection that keeps its host (another
+  URL path, model or key) does not pause it: check the AI again after such
+  an edit. Only system
+  administrators set the links, on create too. A setting that was ever
+  enabled cannot be deleted, only disabled.
+- **n8n and LiteLLM**: when the internal AI connection is n8n, make sure the
+  workflow keeps no memory across conversations and never lets the AI decide
+  to fetch URLs; n8n stores the data of every execution, the record summaries
   included. With *Log Request Content* on, the call logs keep the whole
-  request (system administrators, 30 days).
+  request (system administrators, 30 days). Odoo sends LiteLLM no tools, but
+  an n8n workflow tool, or a LiteLLM proxy or model with tools of its own,
+  that reads Odoo or other company data with credentials of its own is not
+  limited to what the asker may read, and the records' text, which visitors
+  may have typed, can steer it: the consultation project's AI must have none
+  (that is what the box above confirms).
 - **Consultant modules** (bridges): `readable_query` answers must be
   uncorrelated SQL without NULLs (a NULL never makes a record readable, the
   rule embeds `NOT COALESCE(x IN R, FALSE)`); `candidates` always arrives as an
   SQL sub-select; a module that overrides the values hook instead of declaring
-  customer fields overrides the tabs hook too. See 「穩定介面（橋接 API）」.
-- **Reinstalling the CRM template**: if its seeded setting was deleted and
-  replaced by another one for leads, delete the replacement before installing
-  `woow_ai_task_crm` again (one setting per kind of record).
-- **Upgrade and rollback**: `-u woow_ai_task` from 18.0.1.0.0 adds two
-  tables, one task column (no table rewrite), views, a menu and access rows;
-  nothing is removed, no migration script. The 18.0.1.1.0 image may serve the
-  database only once `-u woow_ai_task` has finished (a task read needs the new
-  column). Roll back by restoring the database and filestore snapshot; never
-  with an older image and `-u` (it drops the ledger, the settings and the
-  column). To take the CRM template away, uninstall `woow_ai_task_crm` on an
-  image that has it: the records already sent keep deciding through Odoo's
-  own lead rules.
+  customer fields overrides the tabs hook too. The record's name is read as
+  the asker (Odoo's own rules): the CRM template and the PaaS bridge give
+  their records to the internal tab only, whose askers are employees, so
+  they never need a portal asker to read their models. See
+  「穩定介面（橋接 API）」.
+- **Cost**: the gate's SQL grows with the consulted chats. A member list or a
+  point check compiles its terms for the chats it asks about only (their
+  records-sent rows, the records linked to their tasks); a system
+  administrator's compiled rule takes every records-sent row and every
+  linked record. Measured with 2,100 task chats (median of 20 calls per
+  route, the same query counts, no JIT): a Project user's SQL time per route
+  +2 to +5 ms with 100 consulted chats, +5 to +8.5 ms with 1,000; a system
+  administrator's +3 to +7.5 and +6.5 to +15.5 ms (docs/PROJECT.md 「效能」).
+- **Reinstalling the CRM template**: installing it adopts the setting for
+  leads that exists (an administrator's own setting survives an uninstall of
+  the template) and switches it off; without one it creates one, switched
+  off.
+- **Upgrade and rollback**: `-u woow_ai_task` from 18.0.1.0.0 adds three
+  tables (one is the impact preview's transient model), one task column (no
+  table rewrite), views, a menu and access rows; nothing is removed, no
+  migration script. The 18.0.1.1.0 image may serve the database only once
+  `-u woow_ai_task` has finished (a task read needs the new column). Roll
+  back by restoring the database and filestore snapshot; never with an older
+  image and `-u` (it drops the ledger, the settings and the column). An image
+  older than 18.0.1.1.0 has no consultant gate: colleagues who cannot read a
+  consulted record could read and join those chats again, so once a kind of
+  record was enabled, roll back only by restoring the snapshot. To take the
+  CRM template away, uninstall `woow_ai_task_crm` on an image that has it:
+  the records already sent keep deciding through Odoo's own lead rules.
 - **An image without the code still opens tasks and leads**: the task form's
   「AI 顧問對象」 page, the lead form's buttons and smart button and the
   task's lead field are added in Python (`_get_view`), not by stored views,
   so an older release or a rollback image that lacks the consultant (or the
   CRM template) shows those forms without them instead of failing on unknown
-  fields; the settings menu hides itself without its model. The consultant's
-  gate and data need its code, like the rest of Project AI: keep the modules
-  in every image that serves the database.
+  fields. The settings menu stays visible to system administrators there
+  (its access rows stay in the database): it opens an error, and every fill
+  of the menu cache logs one `Missing model woow.project.ai.consult.profile`
+  ERROR. The consultant's gate and data need its code, like the rest of
+  Project AI: keep the modules in every image that serves the database.
 
 Details (Traditional Chinese): [docs/PROJECT.md](docs/PROJECT.md) 「AI 顧問」; the
 API for consultant modules: 「穩定介面（橋接 API）」 there.
@@ -454,9 +524,13 @@ API for consultant modules: 「穩定介面（橋接 API）」 there.
 
 - AI form consultant: a record's data reaches the AI only inside the cleaned,
   tagged data section, read with the asker's own rights, only the fields its
-  consultant module lists (never contact details, addresses, the chatter and
-  its log notes, files or activities), names of related records only those every
-  other person of the chat can read. The AI only reads. Links in its replies
+  consultant module lists (never the contact fields such as e-mail, phone,
+  address and contact name, nor the chatter and its log notes, files or
+  activities), names of related records only those every other person of the
+  chat can read. Long free texts (a lead's Notes, which can hold a whole Live
+  Chat conversation) go only while the setting sends them; e-mail addresses,
+  phone numbers and IP addresses in the free text sent are masked, names and
+  postal addresses are not. The AI only reads. Links in its replies
   stay clickable, and files are downloaded, only for this site's hosts and
   the hosts the consulted records allow (and, for files, the connection's
   download domains too).

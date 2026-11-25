@@ -33,12 +33,13 @@ import psycopg2
 
 from odoo import Command, api, fields, models
 from odoo.exceptions import AccessError, MissingError, UserError
+from odoo.osv import expression
 from odoo.tools import SQL
 from odoo.tools.query import Query
 
 from ..tools.ids import as_id, require_int_ids
 from ..tools.logs import log_unexpected
-from ..tools.record_text import MORE_NAMES, cap, clean_data_text, field_text
+from ..tools.record_text import MORE_NAMES, cap, clean_data_text, field_text, mask_contacts
 from .project_project import PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
 _logger = logging.getLogger(__name__)
@@ -57,9 +58,10 @@ LinkSpec = namedtuple('LinkSpec', 'field role sequence guard')
 
 # the state of consultation in this database (consult_state): enabled models, whether consultation was ever
 # used (a profile was ever enabled, or the ledger has a row: then the gate applies), ledger models that are not
-# mixin models of this registry (a bridge was uninstalled), the projects of the profiles
-State = namedtuple('State', 'enabled_models used ledger_other_models profile_project_ids')
-UNUSED = State(frozenset(), False, frozenset(), frozenset())
+# mixin models of this registry (a bridge was uninstalled), the projects of the profiles, the models whose long
+# free texts (detail fields: a lead's Notes) are sent (「送出備註」 on)
+State = namedtuple('State', 'enabled_models used ledger_other_models profile_project_ids notes_models')
+UNUSED = State(frozenset(), False, frozenset(), frozenset(), frozenset())
 
 # what a declared consult field may not be (check_field_rules)
 FORBIDDEN_FIELD_TYPES = frozenset(('binary', 'image', 'json', 'properties', 'properties_definition', 'reference',
@@ -68,7 +70,9 @@ FORBIDDEN_NAME_RE = re.compile(
     r'password|passwd|secret|token|api[_-]?key|credential|signup|email|phone|mobile|street|zip|vat|iban|bank',
     re.IGNORECASE)
 MAX_RELATED_NAMES = 10
-# characters of the record's name in a consultation task's name (N6 B)
+# field types whose text is free (typed by people, visitors too): contact details in it are masked for the AI
+FREE_TEXT_TYPES = frozenset(('char', 'text', 'html', 'many2one', 'many2many', 'one2many'))
+# characters of the record's name in a consultation task's name
 MAX_TASK_NAME = 80
 # continuing a consultation: the newest candidate tasks looked at
 MAX_CONTINUE_CANDIDATES = 20
@@ -287,15 +291,36 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
 
     @api.depends_context('uid')
     def _compute_woow_project_ai_consult_task_count(self):
-        allowed = self._woow_project_ai_consult_allowed()
+        counts = self._woow_project_ai_consult_task_counts() if self._woow_project_ai_consult_allowed() else {}
         for record in self:
-            count = 0
-            if allowed and as_id(record.id):
-                try:
-                    count = len(record._woow_project_ai_consult_readable_tasks())
-                except AccessError:
-                    count = 0
-            record.woow_project_ai_consult_task_count = count
+            record.woow_project_ai_consult_task_count = counts.get(as_id(record.id), 0)
+
+    def _woow_project_ai_consult_task_counts(self):
+        """{record id: its consultation tasks the current user can read}: one
+        search for the whole recordset through the task fields that link this
+        model (its link specs); a model without one, one search per record."""
+        ids = [record_id for record_id in (as_id(record.id) for record in self) if record_id]
+        if not ids:
+            return {}
+        Task = self.env['project.task']
+        specs = [spec for spec in Task._woow_project_ai_consult_specs()
+                 if Task._fields[spec.field].comodel_name == self._name]
+        counts = {}
+        try:
+            if not specs:
+                for record in self.browse(ids):
+                    counts[record.id] = len(record._woow_project_ai_consult_readable_tasks())
+                return counts
+            linked = Task.sudo().with_context(active_test=False)._search(
+                expression.OR([[(spec.field, 'in', ids)] for spec in specs]))
+            tasks = Task.search([('id', 'in', linked), ('woow_project_ai_consult_entry', '=', True)])
+            wanted = set(ids)
+            for task in tasks.sudo():
+                for record_id in {record_id for spec in specs for record_id in task[spec.field].ids} & wanted:
+                    counts[record_id] = counts.get(record_id, 0) + 1
+        except AccessError:
+            return {}
+        return counts
 
     def _woow_project_ai_consult_readable_tasks(self, extra_domain=None, limit=None):
         """The consultation tasks of this record the current user can read,
@@ -372,11 +397,16 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
         """[(label, text, is_detail)] of this record for the AI of `tab`: the
         declared fields read as `user` (field labels in their language; names
         of related records only those every user of `audience` can read too, at
-        most 10). Empty values are left out. The caller cleans and caps."""
+        most 10). The long ones (detail fields) only while the setting sends
+        the Notes; e-mail addresses, phone numbers and IP addresses in free
+        text masked. Empty values are left out. The caller cleans and caps."""
         self.ensure_one()
         record = self.with_user(user)
         names = check_field_rules(record, record._woow_project_ai_consult_fields(tab))
         details = set(record._woow_project_ai_consult_detail_fields(tab))
+        if self._name not in consult_state(self.env).notes_models:
+            # 「送出備註」 off: the long free texts are not even read
+            names = [name for name in names if name not in details]
         labels = {}
         for name in names:
             labels.setdefault(record._fields[name]._description_string(record.env), []).append(name)
@@ -391,6 +421,9 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
                                   max_names=MAX_RELATED_NAMES, more=MORE_NAMES)
             except (AccessError, MissingError):
                 continue
+            if text and field.type in FREE_TEXT_TYPES:
+                # free text (a visitor's too): cleaned, then e-mail addresses, phone numbers and IPs masked
+                text = mask_contacts(clean_data_text(text, one_line=name not in details))
             if text:
                 values.append((label, text, name in details))
         return values
@@ -415,20 +448,22 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
         when the task is created: renaming the record later does not rename
         the task.
 
-        N6 (owner, 2026-11-25: option B): the record's own name, as in
-        「AI 顧問：大安區廚房翻新」, read with the asker's own rights (never sudo:
-        the asker can read the record, or they could not consult it), cleaned
-        as a one-line data value and cut at 80 characters; without a name, the
-        kind and the number, as in 「AI 顧問：商機 #42」. Everyone who can read
-        the consultation project reads its task names, also colleagues who
-        cannot read the record, and names typed by website visitors appear:
-        the owner accepted both. This method is the one place to change it."""
+        A product decision: the record's own name, as in 「AI 顧問：大安區廚房翻新」,
+        read with the asker's own rights (never sudo: the asker can read the
+        record, or they could not consult it), cleaned as a one-line data
+        value, e-mail addresses, phone numbers and IP addresses masked, and
+        cut at 80 characters; without a name, the kind and the number, as in
+        「AI 顧問：商機 #42」 (also what the tasks of a deleted record are renamed
+        to). An accepted trade-off: everyone who can read the consultation
+        project reads its task names, also colleagues who cannot read the
+        record, and names typed by website visitors appear. This method is the
+        one place to change it."""
         self.ensure_one()
         name = ''
         if self.env.uid:
             try:
-                name = cap(clean_data_text(self.with_user(self.env.uid).display_name, one_line=True),
-                           MAX_TASK_NAME)
+                name = cap(mask_contacts(clean_data_text(self.with_user(self.env.uid).display_name,
+                                                         one_line=True)), MAX_TASK_NAME)
             except AccessError:
                 name = ''
         if name:
@@ -454,13 +489,61 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
 
     def unlink(self):
         Channel = self.env['discuss.channel']
-        chats = Channel._woow_project_ai_consulted_chats(self) if consult_state(self.env).used else None
+        used = consult_state(self.env).used
+        chats = Channel._woow_project_ai_consulted_chats(self) if used else None
+        # the consultation tasks of a deleted record keep no trace of its name: kind and number instead
+        renames = self._woow_project_ai_consult_fallback_names() if used else {}
         res = super().unlink()
+        if renames:
+            self.env['project.task']._woow_project_ai_consult_rename(renames)
         if chats:
             # a deleted record is readable by nobody: the chats that consulted it close (their history stays)
             Channel._woow_project_ai_forget_readable()
             chats.exists()._woow_project_ai_sync()
         return res
+
+    def _woow_project_ai_consult_fallback_names(self, target=None):
+        """{task id: the fallback name 「AI 顧問：<kind> #<id>」} for the
+        consultation tasks (the ones 「詢問 AI 顧問」 created) linked to these
+        records (sudo), in the language of each task's company (as when it was
+        created); `target` (a record of this model) names them after another
+        record (a merge keeps that one). One search through the task fields
+        that link this model (its link specs); a model without one, one search
+        per record through its task domain."""
+        Assistant = self.env['woow.project.ai.assistant']
+        Task = self.env['project.task'].sudo().with_context(active_test=False)
+        ids = [record_id for record_id in (as_id(record.id) for record in self) if record_id]
+        if not ids:
+            return {}
+        entry = [('woow_project_ai_consult_entry', '=', True)]
+        specs = [spec for spec in Task._woow_project_ai_consult_specs()
+                 if Task._fields[spec.field].comodel_name == self._name]
+        linked = {}  # task: the record it is named after
+        if specs:
+            wanted = set(ids)
+            for task in Task.search(expression.OR([[(spec.field, 'in', ids)] for spec in specs]) + entry):
+                for spec in specs:
+                    found = [record_id for record_id in task[spec.field].ids if record_id in wanted]
+                    if found:
+                        linked[task] = found[0]
+                        break
+        else:
+            for record in self.browse(ids):
+                try:
+                    domain = record._woow_project_ai_consult_task_domain()
+                except NotImplementedError:
+                    continue
+                for task in Task.search(domain + entry):
+                    linked.setdefault(task, record.id)
+        names = {}
+        for task, record_id in linked.items():
+            named = target or self.browse(record_id)
+            company = task.project_id.company_id or task.company_id or self.env.company
+            lang = Assistant._installed_lang(company.partner_id.lang, self.env.lang)
+            names[task.id] = self.env['project.task'].with_context(lang=lang).env._(
+                'AI consultation: %(kind)s #%(id)s',
+                kind=named.with_context(lang=lang)._woow_project_ai_consult_kind(lang), id=named.id)
+        return names
 
     # --- Buttons ---
 
@@ -521,6 +604,11 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
         reasons = project._woow_project_ai_tab_blocked_reasons(TAB_INTERNAL)
         if reasons:
             raise UserError('\n'.join(reasons))
+        if profile._woow_project_ai_consult_destination_changed():
+            # the AI behind the project is not the one a system administrator confirmed: no task, no data
+            raise UserError(_('Where the record data goes changed after a system administrator enabled the AI '
+                              'consultant. A system administrator must confirm it again in "AI Consultant '
+                              'Settings".'))
         if self.id not in readable_ids(self.env, self._name, [self.id], user, TAB_INTERNAL, companies):
             raise AccessError(_('You have no access to read this record.'))
         task = Task.sudo() if new else self._woow_project_ai_consult_continue(user, project)

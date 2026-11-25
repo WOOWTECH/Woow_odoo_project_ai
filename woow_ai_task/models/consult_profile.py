@@ -17,6 +17,7 @@ from odoo.addons.base.models.ir_model import MODULE_UNINSTALL_FLAG
 from odoo.exceptions import UserError, ValidationError
 from odoo.osv import expression
 
+from ..tools.urls import split_url
 from .consult_mixin import (
     PROFILE, UNUSED, State, company_ids, consult_models, consult_state, is_consult_model, model_tabs)
 from .project_project import TAB_CUSTOMER, TAB_INTERNAL
@@ -29,6 +30,10 @@ PREVIEW_MAX_NAMES = 200
 # set on the registry once both tables exist (they never go away while this code is loaded)
 TABLES_READY_KEY = '_woow_project_ai_consult_tables_ready'
 SYNC_CRON = 'woow_ai_task.ir_cron_project_ai_sync_members'
+PROJECT_MANAGER_GROUP = 'project.group_project_manager'
+# Odoo 18 (base_setup): while this system parameter is on, the default user template's groups reach new and
+# existing employees (Settings > Users > Default Access Rights)
+DEFAULT_RIGHTS_PARAM = 'base_setup.default_user_rights'
 
 
 class WoowProjectAiConsultProfile(models.Model):
@@ -58,6 +63,29 @@ class WoowProjectAiConsultProfile(models.Model):
         string='Consultant Role',
         help='A trusted instruction for the internal AI (at most 1,000 characters), sent with every consultation '
              'that includes these records. Never sent to the customer tab.')
+    send_notes = fields.Boolean(
+        string='Send the Notes', default=False, copy=False,
+        help="Send these records' long free texts (for leads: the Notes) to the AI. They hold whatever was typed "
+             "into them, by visitors too: contact details, a whole Live Chat conversation, a web form's extra "
+             "fields. E-mail addresses, phone numbers and IP addresses are masked; names and postal addresses are "
+             "not.")
+    no_data_tools = fields.Boolean(
+        string='This connection has no tools that read company data', compute='_compute_no_data_tools',
+        inverse='_inverse_no_data_tools',
+        help='Confirm that the AI behind the consultation project (its n8n workflow, its LiteLLM proxy or model) '
+             'has no tool that reads Odoo or other company data with credentials of its own: such a tool is not '
+             'limited to what the asker may read, and the records\' text, which visitors may have typed, can steer '
+             'it. Required to enable. Ticking it confirms where the data goes now (the assistant, its connection '
+             'and its backend host); when that changes, it is cleared and the AI consultant pauses for these '
+             'records until a system administrator ticks it again.')
+    destination_fingerprint = fields.Char(
+        string='Confirmed Destination', readonly=True, copy=False,
+        help='Where the data went when a system administrator last ticked "This connection has no tools that read '
+             'company data": the AI assistant, its connection, its kind and its backend host.')
+    destination_changed = fields.Boolean(
+        string='Destination Changed', compute='_compute_destination_changed',
+        help='Where the record data would go now differs from what a system administrator confirmed: the AI '
+             'consultant is paused for these records until one confirms again.')
     project_from_record = fields.Boolean(
         string='Project From the Record', compute='_compute_project_from_record',
         help="The record's own module chooses the consultation project of each record.")
@@ -79,7 +107,7 @@ class WoowProjectAiConsultProfile(models.Model):
             profile.project_from_record = bool(is_consult_model(self.env, model)
                                                and self.env[model]._woow_project_ai_consult_project_from_record())
 
-    @api.depends('project_id', 'model_id', 'project_id.woow_project_ai_internal_assistant_id')
+    @api.depends('project_id', 'model_id', 'send_notes', 'project_id.woow_project_ai_internal_assistant_id')
     def _compute_data_destination(self):
         _ = self.env._
         Connection = self.env['woow.project.ai.connection']
@@ -94,9 +122,14 @@ class WoowProjectAiConsultProfile(models.Model):
                 profile.data_destination = _('Nowhere yet: no internal AI assistant in the consultation project')
                 continue
             backend = backends.get(assistant.connection_id.backend_type) or ''
-            profile.data_destination = '%s (%s)' % (assistant.name, backend) if backend else assistant.name
+            text = '%s (%s)' % (assistant.name, backend) if backend else assistant.name
+            if profile._woow_project_ai_consult_has_notes():
+                text = '%s; %s' % (text, _('Notes: sent, contact details masked') if profile.send_notes
+                                   else _('Notes: not sent'))
+            profile.data_destination = text
 
-    @api.depends('project_id', 'model_id', 'enabled', 'project_id.privacy_visibility',
+    @api.depends('project_id', 'model_id', 'enabled', 'send_notes', 'destination_fingerprint',
+                 'project_id.privacy_visibility',
                  'project_id.woow_project_ai_internal_assistant_id', 'project_id.woow_project_ai_customer_assistant_id')
     def _compute_warning(self):
         _ = self.env._
@@ -107,12 +140,19 @@ class WoowProjectAiConsultProfile(models.Model):
             project = profile.sudo().project_id
             if not project and not profile.project_from_record:
                 lines.append(_('No consultation project is chosen yet.'))
+            if profile.enabled and profile._woow_project_ai_consult_destination_changed():
+                lines.append(_('Where the record data goes changed after a system administrator confirmed it (now: '
+                               '%(now)s). The AI consultant is paused for these records until a system administrator '
+                               'checks that AI and ticks "This connection has no tools that read company data" '
+                               'again.', now=profile.data_destination or '-'))
             if project or profile.project_from_record:
-                # N6 B: the task names carry the record's name (consult_mixin._woow_project_ai_consult_task_name)
+                # product decision: the task names carry the record's name (consult_mixin, _consult_task_name)
                 lines.append(_("The names of consultation tasks carry the record's name (renaming the record later "
-                               "does not rename them): everyone who can read the consultation project sees them, "
-                               "names typed by website visitors included. With Odoo's default user template every "
-                               "employee is a Project Administrator and reads every task."))
+                               "does not rename them; deleting it does): everyone who can read the consultation "
+                               "project sees them, names typed by website visitors included. Project Administrators "
+                               "read every task whatever the project's visibility: an invited-users project hides "
+                               "the names only from the other Project users."))
+                lines += profile._woow_project_ai_consult_rights_lines()
             if project:
                 assistant = project._woow_project_ai_tab_assistant(TAB_INTERNAL)
                 if not assistant or project._woow_project_ai_tab_problems(TAB_INTERNAL, assistant):
@@ -121,18 +161,120 @@ class WoowProjectAiConsultProfile(models.Model):
                 if project.privacy_visibility == 'portal':
                     lines.append(_('The consultation project is shared with portal users: customers added to it '
                                    'see the names (with the record names) and assignees of its consultation tasks.'))
-                if assistant and assistant.connection_id.backend_type == 'n8n':
+                backend = assistant.connection_id.backend_type if assistant else None
+                if backend == 'n8n':
                     lines.append(_('The internal AI connection is n8n: make sure the workflow keeps no memory across '
                                    'conversations and never lets the AI decide to fetch URLs, and note that n8n '
-                                   'keeps the data of every execution it receives.'))
+                                   'keeps the data of every execution it receives. A workflow tool that reads Odoo '
+                                   'or other company data with credentials of its own is not limited to what the '
+                                   'asker may read, and the records\' text, which visitors may have typed, can '
+                                   'steer it.'))
+                elif backend == 'openai':
+                    lines.append(_('The internal AI connection is LiteLLM: Odoo sends no tools, but a proxy or a '
+                                   'model with tools of its own that read Odoo or other company data is not limited '
+                                   'to what the asker may read, and the records\' text, which visitors may have '
+                                   'typed, can steer it.'))
                 if consulted and TAB_CUSTOMER not in model_tabs(self.env, model) \
                         and project._woow_project_ai_tab_assistant(TAB_CUSTOMER):
-                    lines.append(_('These records have no fields for customers: the customer tab gets no record '
-                                   'data.'))
+                    lines.append(_('These records have no fields for customers: no record field goes to the '
+                                   "customer tab, but the consultation task's name, which carries the record's "
+                                   'name, does.'))
+            if profile._woow_project_ai_consult_has_notes():
+                if profile.send_notes:
+                    lines.append(_("The Notes are sent: they hold whatever was typed into them, by visitors too "
+                                   "(contact details, a whole Live Chat conversation, a web form's extra fields and "
+                                   "metadata). E-mail addresses, phone numbers and IP addresses are masked before "
+                                   "they reach the AI; names and postal addresses are not."))
+                else:
+                    lines.append(_('The Notes are not sent ("Send the Notes" is off).'))
             if consulted:
                 lines += [str(line) for line in self.env[model]._woow_project_ai_consult_profile_warnings(profile)
                           or () if line]
             profile.warning = '\n'.join(lines)
+
+    def _woow_project_ai_consult_rights_lines(self):
+        """Who reads every consultation task, counted now: the Project
+        Administrators among the active employees, and whether Default Access
+        Rights is on (Odoo 18: then the default user template's groups reach
+        new employees too; with Odoo's template they include Project
+        Administrator)."""
+        _ = self.env._
+        Users = self.env['res.users'].sudo()
+        employees = Users.search([('share', '=', False)])
+        group = self.env.ref(PROJECT_MANAGER_GROUP, raise_if_not_found=False)
+        managers = employees.filtered(lambda user: group in user.groups_id) if group else Users
+        lines = [_('Employees who are Project Administrators (they read every consultation task): %(managers)s of '
+                   '%(employees)s.', managers=len(managers), employees=len(employees))]
+        if self._woow_project_ai_default_rights_on():
+            lines.append(_('Default Access Rights (Settings > Users) is on: new employees get the groups of the '
+                           'default user template, with Odoo\'s template Project Administrator too.'))
+        return lines
+
+    @api.model
+    def _woow_project_ai_default_rights_on(self):
+        """Odoo 18: whether the default user template's groups reach new and
+        existing employees (Settings > Users > Default Access Rights; on by
+        default since base_setup's install; without base_setup they always do)."""
+        if 'base_setup' not in self.env.registry._init_modules:
+            return True
+        value = self.env['ir.config_parameter'].sudo().get_param(DEFAULT_RIGHTS_PARAM)
+        return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _woow_project_ai_consult_has_notes(self):
+        """Whether this kind of record has long free texts (detail fields)."""
+        self.ensure_one()
+        model = self.model_id.model
+        if not is_consult_model(self.env, model):
+            return False
+        Model = self.env[model]
+        return bool(Model._woow_project_ai_consult_detail_fields(TAB_INTERNAL)
+                    or Model._woow_project_ai_consult_detail_fields(TAB_CUSTOMER))
+
+    # --- Where the data goes: confirmed by a system administrator ---
+
+    def _woow_project_ai_consult_destination(self):
+        """The fingerprint of where the record data goes now: the
+        consultation project's internal AI assistant, its connection, the
+        connection's kind and its backend host ('none' without an assistant;
+        'project-from-record' when each record chooses its project: that
+        module answers for its projects' assistants)."""
+        self.ensure_one()
+        if self.project_from_record:
+            return 'project-from-record'
+        project = self.sudo().project_id
+        assistant = project._woow_project_ai_tab_assistant(TAB_INTERNAL) if project else None
+        if not assistant:
+            return 'none'
+        connection = assistant.sudo().connection_id
+        parts = split_url(connection.endpoint_url or '')
+        host = (parts.hostname or '').lower() if parts else ''
+        return 'assistant:%s;connection:%s;kind:%s;host:%s' % (
+            assistant.id, connection.id, connection.backend_type or '', host)
+
+    def _woow_project_ai_consult_destination_changed(self):
+        """Whether where the data goes now differs from what a system
+        administrator confirmed (ticking no_data_tools, required to enable)."""
+        self.ensure_one()
+        profile = self.sudo()
+        return (profile.destination_fingerprint or '') != profile._woow_project_ai_consult_destination()
+
+    @api.depends('enabled', 'destination_fingerprint', 'project_id', 'project_id.woow_project_ai_internal_assistant_id')
+    def _compute_destination_changed(self):
+        for profile in self:
+            profile.destination_changed = bool(profile.enabled) \
+                and profile._woow_project_ai_consult_destination_changed()
+
+    @api.depends('destination_fingerprint', 'project_id', 'project_id.woow_project_ai_internal_assistant_id')
+    def _compute_no_data_tools(self):
+        # ticked only while it confirmed the destination of now: any change of the assistant, its connection or
+        # its host clears it
+        for profile in self:
+            profile.no_data_tools = not profile._woow_project_ai_consult_destination_changed()
+
+    def _inverse_no_data_tools(self):
+        for profile in self:
+            profile.destination_fingerprint = profile._woow_project_ai_consult_destination() \
+                if profile.no_data_tools else False
 
     # --- Constraints ---
 
@@ -150,6 +292,17 @@ class WoowProjectAiConsultProfile(models.Model):
                 raise ValidationError(self.env._('Choose a consultation project before enabling the AI '
                                                  'consultant.'))
 
+    def _check_woow_project_ai_no_data_tools(self):
+        """Enabled only with the confirmation that the AI behind the
+        consultation project has no company-data tools, for where the data
+        goes now. Called by create and write once no_data_tools' inverse has
+        run (an @api.constrains on a stored field runs before it)."""
+        for profile in self:
+            if profile.enabled and profile._woow_project_ai_consult_destination_changed():
+                raise ValidationError(self.env._('Before enabling the AI consultant, confirm that the AI behind '
+                                                 'the consultation project has no tools that read company data '
+                                                 '("This connection has no tools that read company data").'))
+
     @api.constrains('role_prompt')
     def _check_woow_project_ai_role_prompt(self):
         for profile in self:
@@ -163,6 +316,7 @@ class WoowProjectAiConsultProfile(models.Model):
     def create(self, vals_list):
         vals_list = [dict(vals, was_enabled=True) if vals.get('enabled') else vals for vals in vals_list]
         profiles = super().create(vals_list)
+        profiles._check_woow_project_ai_no_data_tools()
         self._woow_project_ai_consult_changed(any(profiles.mapped('enabled')))
         return profiles
 
@@ -174,6 +328,8 @@ class WoowProjectAiConsultProfile(models.Model):
         if vals.get('enabled'):
             vals = dict(vals, was_enabled=True)
         res = super().write(vals)
+        if {'enabled', 'no_data_tools', 'project_id', 'model_id'} & set(vals):
+            self._check_woow_project_ai_no_data_tools()
         changed = 'enabled' in vals and any(before[profile.id] != profile.enabled for profile in self)
         self._woow_project_ai_consult_changed(changed)
         return res
@@ -229,7 +385,7 @@ class WoowProjectAiConsultProfile(models.Model):
     @api.model
     @tools.ormcache()
     def _woow_project_ai_consult_state_cached(self):
-        self.flush_model(['model', 'enabled', 'was_enabled', 'project_id'])
+        self.flush_model(['model', 'enabled', 'was_enabled', 'project_id', 'send_notes'])
         self.env.cr.execute("""
             SELECT ARRAY(SELECT DISTINCT model FROM woow_project_ai_consult_profile
                           WHERE enabled AND model IS NOT NULL),
@@ -237,20 +393,23 @@ class WoowProjectAiConsultProfile(models.Model):
                      OR EXISTS(SELECT 1 FROM woow_project_ai_consult_sent),
                    ARRAY(SELECT DISTINCT res_model FROM woow_project_ai_consult_sent),
                    ARRAY(SELECT DISTINCT project_id FROM woow_project_ai_consult_profile
-                          WHERE project_id IS NOT NULL)""")
-        enabled, used, ledger_models, projects = self.env.cr.fetchone()
+                          WHERE project_id IS NOT NULL),
+                   ARRAY(SELECT DISTINCT model FROM woow_project_ai_consult_profile
+                          WHERE send_notes AND model IS NOT NULL)""")
+        enabled, used, ledger_models, projects, notes = self.env.cr.fetchone()
         mixin = consult_models(self.env)
         return State(
             enabled_models=frozenset(name for name in enabled if name in mixin),
             used=bool(used),
             ledger_other_models=frozenset(name for name in ledger_models if name not in mixin),
             profile_project_ids=frozenset(projects),
+            notes_models=frozenset(name for name in notes if name in mixin),
         )
 
     # --- Preview ---
 
     def action_woow_project_ai_consult_preview(self):
-        """「預覽影響」: who would leave which task AI chats if this kind of
+        """「預覽影響」: who would leave how many task AI chats if this kind of
         record were enabled (the chats whose task links such records; at most
         2,000 chats per press), by name, in a dialog. Nothing changes."""
         self.ensure_one()
@@ -318,9 +477,15 @@ class WoowProjectAiConsultProfile(models.Model):
                            'to the task, or one its AI already got):'))
             people = sorted(leaving.items(), key=lambda item: (-item[1], item[0].name or '', item[0].id))
             for partner, chats in people[:PREVIEW_MAX_NAMES]:
-                lines.append(_('- %(name)s: %(count)s chats', name=partner.name or '?', count=chats))
-            if len(people) > PREVIEW_MAX_NAMES:
-                lines.append(_('… and %(count)s more people.', count=len(people) - PREVIEW_MAX_NAMES))
+                if chats == 1:
+                    lines.append(_('- %(name)s: 1 chat', name=partner.name or '?'))
+                else:
+                    lines.append(_('- %(name)s: %(count)s chats', name=partner.name or '?', count=chats))
+            more = len(people) - PREVIEW_MAX_NAMES
+            if more == 1:
+                lines.append(_('… and 1 more person.'))
+            elif more > 1:
+                lines.append(_('… and %(count)s more people.', count=more))
         else:
             lines.append(_('If you enable it, nobody leaves a task AI chat.'))
         if self.was_enabled:

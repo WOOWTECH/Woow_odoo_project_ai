@@ -19,7 +19,7 @@ from odoo.exceptions import AccessError, MissingError, UserError
 from odoo.tools import SQL
 
 from ..tools.ids import as_id, defaults_set, real_ids, require_int_ids
-from ..tools.record_text import cap, clean_data_text, field_text, json_line, unique_labels
+from ..tools.record_text import cap, clean_data_text, field_text, json_line, mask_contacts, unique_labels
 from .consult_mixin import (
     PROFILE, ROLE_PRIMARY, consult_keys, consult_state, is_consult_model, model_tabs, readable_ids)
 from .discuss_channel import deleting, is_sync, trusted, with_sync
@@ -65,7 +65,9 @@ CONSULT_MAX_RECORDS = 8
 CONSULT_MAX_VALUE = 300
 CONSULT_MAX_DETAIL = 1500
 CONSULT_MAX_CHARS = 6000
-CONSULT_HEADER = 'AI 顧問對象（每行一筆紀錄）：'
+# the title of the consulted records' section carries the request's tag (record_text.CONSULT_DATA_NOTE): text
+# imitating the section (a task description) cannot know it
+CONSULT_HEADER = 'AI 顧問對象（每行一筆紀錄；標記 %s）：'
 CONSULT_ROLE_LABELS = {ROLE_PRIMARY: '主要', 'extra': '其他'}
 
 
@@ -540,15 +542,23 @@ class ProjectTask(models.Model):
     def _woow_project_ai_consult_ledger_pairs(self):
         """(model, id) recorded in the AI chats of this task (both tabs)."""
         self.ensure_one()
-        task_id = as_id(self.id)
-        if not task_id:
-            return set()
+        return self._woow_project_ai_consult_ledger_pairs_by_task().get(as_id(self.id), set())
+
+    def _woow_project_ai_consult_ledger_pairs_by_task(self):
+        """{task id: {(model, id)}} recorded in the AI chats of these tasks
+        (both tabs): one query for the recordset."""
+        task_ids = [task_id for task_id in (as_id(task.id) for task in self) if task_id]
+        if not task_ids:
+            return {}
         self.env['discuss.channel'].flush_model(['woow_project_ai_task_id'])
         rows = self.env.execute_query(SQL("""
-            SELECT DISTINCT s.res_model, s.res_id FROM woow_project_ai_consult_sent s
+            SELECT DISTINCT c.woow_project_ai_task_id, s.res_model, s.res_id FROM woow_project_ai_consult_sent s
               JOIN discuss_channel c ON c.id = s.channel_id
-             WHERE c.woow_project_ai_task_id = %s""", task_id))
-        return {(model, res_id) for model, res_id in rows}
+             WHERE c.woow_project_ai_task_id = ANY(%s)""", task_ids))
+        pairs = {}
+        for task_id, model, res_id in rows:
+            pairs.setdefault(task_id, set()).add((model, res_id))
+        return pairs
 
     # --- The AI consultant: the task page 「AI 顧問對象」 ---
 
@@ -558,13 +568,14 @@ class ProjectTask(models.Model):
         # project); no query unless consultation is configured
         state = consult_state(self.env)
         specs = self._woow_project_ai_consult_specs()
+        ledger = self.sudo()._woow_project_ai_consult_ledger_pairs_by_task() if state.used else {}
         for task in self:
             show = False
-            if as_id(task.id):
+            task_id = as_id(task.id)
+            if task_id:
                 task_sudo = task.sudo()
                 show = any(task_sudo[spec.field] for spec in specs) \
-                    or task_sudo.project_id.id in state.profile_project_ids \
-                    or (state.used and bool(task_sudo._woow_project_ai_consult_ledger_pairs()))
+                    or task_sudo.project_id.id in state.profile_project_ids or bool(ledger.get(task_id))
             task.woow_project_ai_consult_show = show
 
     @api.depends_context('uid', 'lang')
@@ -576,24 +587,28 @@ class ProjectTask(models.Model):
         user = self.env.user
         state = consult_state(self.env)
         specs = self._woow_project_ai_consult_specs()
-        for task in self:
-            if not as_id(task.id) or not (specs or state.used):
-                task.woow_project_ai_consult_summary = False
-                continue
-            task_sudo = task.sudo()
+        tasks = self.filtered(lambda task: as_id(task.id)) if specs or state.used else self.browse()
+        ledger = tasks.sudo()._woow_project_ai_consult_ledger_pairs_by_task() if state.used else {}
+        # the links and earlier records of every task first, then one readability check per model for all
+        plans, by_model = {}, {}
+        for task in tasks:
             linked = []
             for spec in specs:
-                for record in task_sudo[spec.field]:
+                for record in task.sudo()[spec.field]:
                     if (record._name, record.id) not in {(model, res_id) for model, res_id, _role in linked}:
                         linked.append((record._name, record.id, spec.role))
-            earlier = sorted(task_sudo._woow_project_ai_consult_ledger_pairs() - {
-                (model, res_id) for model, res_id, _role in linked}) if state.used else []
-            by_model = {}
+            earlier = sorted(ledger.get(as_id(task.id), set()) - {(model, res_id) for model, res_id, _role in linked})
+            plans[task.id] = (linked, earlier)
             for model, res_id in [(model, res_id) for model, res_id, _role in linked] + earlier:
                 by_model.setdefault(model, set()).add(res_id)
-            companies = self._woow_project_ai_company_ids(user) if user else []
-            readable = {model: readable_ids(self.env, model, ids, user, TAB_INTERNAL, companies)
-                        for model, ids in by_model.items()}
+        companies = self._woow_project_ai_company_ids(user) if user and by_model else []
+        readable = {model: readable_ids(self.env, model, ids, user, TAB_INTERNAL, companies)
+                    for model, ids in by_model.items()}
+        for task in self:
+            if task.id not in plans:
+                task.woow_project_ai_consult_summary = False
+                continue
+            linked, earlier = plans[task.id]
             lines, hidden = [], 0
             for model, res_id, role in linked:
                 label = task._woow_project_ai_consult_label(model, res_id, companies) \
@@ -618,7 +633,7 @@ class ProjectTask(models.Model):
                 kind, name = label
                 lines.append(_('Consulted before: %(kind)s: %(name)s', kind=kind, name=name))
             if hidden:
-                lines.append(_('%(count)s more records you cannot read', count=hidden))
+                lines.append(_('Records you cannot read: %(count)s', count=hidden))
             task.woow_project_ai_consult_summary = '\n'.join(lines) or False
 
     def _woow_project_ai_consult_label(self, model, res_id, companies):
@@ -636,6 +651,32 @@ class ProjectTask(models.Model):
             return kind, record.display_name or ''
         except (AccessError, MissingError):
             return None
+
+    # --- The AI consultant: names ---
+
+    @api.model
+    def _woow_project_ai_consult_rename(self, renames):
+        """{task id: name}: consultation tasks renamed (their AI chats follow,
+        no tracking line keeps the old name), and the record names Odoo stored
+        on the messages of the tasks and of their chats (mail.message.
+        record_name, written at post time) rewritten: a deleted record's name
+        stays nowhere the module wrote it (call logs with request content kept
+        excepted, up to 30 days)."""
+        tasks = self.sudo().with_context(active_test=False).browse(list(renames)).exists()
+        if not tasks:
+            return
+        for task in tasks:
+            with_sync(task).with_context(tracking_disable=True, mail_notrack=True).write(
+                {'name': renames[task.id]})
+        self.env.flush_all()
+        self.env.cr.execute("""
+            UPDATE mail_message m SET record_name = c.name FROM discuss_channel c
+             WHERE m.model = 'discuss.channel' AND m.res_id = c.id AND c.woow_project_ai_task_id = ANY(%s)""",
+                            [tasks.ids])
+        self.env.cr.execute("""
+            UPDATE mail_message m SET record_name = t.name FROM project_task t
+             WHERE m.model = 'project.task' AND m.res_id = t.id AND t.id = ANY(%s)""", [tasks.ids])
+        self.env['mail.message'].invalidate_model(['record_name'])
 
     # --- The AI consultant: the task form ---
 
@@ -686,7 +727,11 @@ class ProjectTask(models.Model):
         if is_consult_model(self.env, model) and self.env[model]._woow_project_ai_consult_project_from_record():
             return True
         profile = self.env[PROFILE].sudo().search([('model', '=', model)], limit=1)
-        return profile.project_id == project
+        if profile.project_id != project:
+            return False
+        # the AI behind the project changed after a system administrator confirmed it: no record data until one
+        # confirms again (the button refuses too)
+        return not profile._woow_project_ai_consult_destination_changed()
 
     def _woow_project_ai_consult_targets(self, tab, state):
         """[(record (sudo), role)]: the current links of the enabled models
@@ -711,14 +756,17 @@ class ProjectTask(models.Model):
                 targets.append((record, spec.role))
         return targets
 
-    def _woow_project_ai_consult_block(self, requester, tab, audience):
+    def _woow_project_ai_consult_block(self, requester, tab, audience, tag):
         """The consulted records for the AI of `tab`, read as `requester`
         (with_user, never sudo; only what they can read): (block text, the
         (model, id) of the records that have a line in it, their models in
-        order). One JSON line per record, every value cleaned and capped;
+        order). The block's title carries `tag`, the request's delimiter tag.
+        One JSON line per record, every value cleaned and capped, e-mail
+        addresses, phone numbers and IP addresses in the name and in free text
+        masked; long (detail) values only while the setting sends the Notes;
         related names only those every user of `audience` (the other people of
-        the chat) can read too. Never the chatter, notes, files, activities or
-        properties."""
+        the chat) can read too. Never the chatter, log notes, files, activities
+        or properties."""
         self.ensure_one()
         state = consult_state(self.env)
         if not requester or not state.enabled_models:
@@ -744,30 +792,33 @@ class ProjectTask(models.Model):
                 values = mine._woow_project_ai_consult_values(requester, tab, audience) or []
             except (AccessError, MissingError):
                 continue
+            notes = record._name in state.notes_models
             entries.append({
                 'pair': (record._name, record.id),
                 'primary': role == ROLE_PRIMARY,
                 'kind': cap(clean_data_text(kind), CONSULT_MAX_VALUE),
                 'role': CONSULT_ROLE_LABELS.get(role, CONSULT_ROLE_LABELS['extra']),
-                'name': cap(clean_data_text(name), CONSULT_MAX_VALUE),
+                'name': cap(mask_contacts(clean_data_text(name)), CONSULT_MAX_VALUE),
                 'values': [
                     (cap(clean_data_text(label), CONSULT_MAX_VALUE),
                      cap(clean_data_text(text, one_line=not is_detail),
                          CONSULT_MAX_DETAIL if is_detail else CONSULT_MAX_VALUE),
                      bool(is_detail))
-                    for label, text, is_detail in values if text],
+                    # (a module's own _values may return long values: still only while the Notes are sent)
+                    for label, text, is_detail in values if text and (notes or not is_detail)],
             })
-        lines, sent = self._woow_project_ai_consult_lines(entries)
+        header = CONSULT_HEADER % tag
+        lines, sent = self._woow_project_ai_consult_lines(entries, header)
         if not lines:
             return '', [], []
         models_ = []
         for model, _res_id in sent:
             if model not in models_:
                 models_.append(model)
-        return '\n'.join([CONSULT_HEADER] + lines), sent, models_
+        return '\n'.join([header] + lines), sent, models_
 
     @staticmethod
-    def _woow_project_ai_consult_lines(entries):
+    def _woow_project_ai_consult_lines(entries, header):
         """(JSON lines, sent pairs) within CONSULT_MAX_CHARS, by the trim
         ladder: 1. no long values of extra records; 2. no long values at all;
         3. extra records: kind, role and name only; 4. whole lines cut, then
@@ -786,7 +837,7 @@ class ProjectTask(models.Model):
             return lines
 
         def size(lines):
-            return len(CONSULT_HEADER) + sum(len(line) + 1 for line in lines)
+            return len(header) + sum(len(line) + 1 for line in lines)
 
         lines = []
         for level in range(4):

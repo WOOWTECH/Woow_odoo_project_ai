@@ -5,10 +5,11 @@ linked to it (project.task.woow_project_ai_consult_lead_id).
 
 The AI gets the fields below, read with the asker's own rights (Odoo's own
 lead rules: a salesperson reads their own leads and unassigned ones, a sales
-manager all of them), never the contact details, the address, the chatter
-and its log notes, the files or the activities (the lead's own Notes field,
-description, is sent). Leads have no portal access, so
-nothing goes to the customer tab.
+manager all of them), never the contact fields (e-mail, phone, address,
+contact name), the chatter and its log notes, the files or the activities.
+The lead's free-text Notes (description) are sent only while the setting's
+「送出備註」 is on, with e-mail addresses, phone numbers and IP addresses
+masked. Leads have no portal access, so nothing goes to the customer tab.
 """
 
 from lxml import etree
@@ -33,6 +34,8 @@ NEVER_SENT = ('email_from', 'phone', 'mobile', 'contact_name', 'partner_id', 'fu
 # who may read a lead: the fields of Odoo's lead rules (salesperson, company) and the sales team (the company is
 # a stored compute of it; sites change the noupdate rules)
 ACCESS_FIELDS = frozenset(('user_id', 'team_id', 'company_id'))
+# Sales: "All Documents" (Sales Administrator implies it): reads every lead
+ALL_LEADS_GROUP = 'sales_team.group_sale_salesman_all_leads'
 
 
 class CrmLead(models.Model):
@@ -83,6 +86,26 @@ class CrmLead(models.Model):
     def _woow_project_ai_consult_access_fields(self):
         return set(ACCESS_FIELDS)
 
+    @api.model
+    def _woow_project_ai_consult_profile_warnings(self, profile):
+        """The setting's lines about leads: who reads every lead (and so may
+        use every lead's consultation chats), counted now; the default rights
+        that add more of them; the free text visitors type."""
+        _ = self.env._
+        employees = self.env['res.users'].sudo().search([('share', '=', False)])
+        group = self.env.ref(ALL_LEADS_GROUP, raise_if_not_found=False)
+        readers = employees.filtered(lambda user: group in user.groups_id) if group else employees.browse()
+        lines = [_('Employees who read every lead (Sales: "All Documents" or Administrator), and so may use the '
+                   'consultation chats of every lead: %(readers)s of %(employees)s.', readers=len(readers),
+                   employees=len(employees))]
+        if profile._woow_project_ai_default_rights_on():
+            lines.append(_("Default Access Rights (Settings > Users) is on: new employees get the default user "
+                           "template's groups, with Odoo's template Sales Administrator too (they read every lead)."))
+        lines.append(_("Visitors type leads' names, company names and campaign, source and medium names too (web "
+                       "forms, Live Chat): e-mail addresses, phone numbers and IP addresses in them are masked, "
+                       "names and postal addresses are not."))
+        return lines
+
     def _woow_project_ai_consult_kind(self, lang):
         """「潛在商機」 or 「商機」: the label of the lead's type in `lang` (Odoo's own terms)."""
         self.ensure_one()
@@ -107,13 +130,18 @@ class CrmLead(models.Model):
         Channel = self.env['discuss.channel']
         chat_ids = []
         tasks = self.env['project.task']
+        renames = {}
         if merged:
+            # the consultation tasks of the merged leads carry their names: renamed after this lead's kind and number
+            renames = merged._woow_project_ai_consult_fallback_names(target=self)
             chat_ids = self.env[LEDGER].sudo()._woow_project_ai_move(self._name, merged.ids, self.id)
             tasks = self.env['project.task'].sudo().with_context(active_test=False).search(
                 [(LINK_FIELD, 'in', merged.ids)])
             if tasks:
                 with_sync(tasks).write({LINK_FIELD: self.id})
         res = super()._merge_dependences(opportunities)
+        if renames:
+            self.env['project.task']._woow_project_ai_consult_rename(renames)
         chats = Channel.sudo().browse(chat_ids) | Channel._woow_project_ai_chats_of(tasks)
         if chats:
             Channel._woow_project_ai_forget_readable()

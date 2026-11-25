@@ -25,6 +25,12 @@
                             class="btn-secondary" invisible="not id"/>
                 </header>
                 <sheet>
+                    <field name="destination_changed" invisible="1"/>
+                    <div class="alert alert-danger" role="alert" invisible="not destination_changed">
+                        Where the record data goes changed after a system administrator confirmed it: the AI
+                        consultant is paused for these records. Check the AI behind the consultation project, then
+                        tick "This connection has no tools that read company data" again and save.
+                    </div>
                     <div class="alert alert-warning" role="alert" invisible="not warning">
                         <field name="warning" readonly="1" nolabel="1"/>
                     </div>
@@ -51,6 +57,8 @@
                             <field name="project_id" invisible="project_from_record"
                                    options="{'no_create': True}"/>
                             <field name="data_destination"/>
+                            <field name="no_data_tools"/>
+                            <field name="send_notes"/>
                         </group>
                     </group>
                     <group string="Consultant Role" name="woow_project_ai_consult_role">

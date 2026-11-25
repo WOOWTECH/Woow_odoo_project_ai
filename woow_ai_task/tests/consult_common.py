@@ -120,6 +120,9 @@ class ConsultFixtures(AiTaskFixtures):
         return profile
 
     def enable(self, model, project=None, **vals):
+        """Enabled for `project` (the consultation project by default), with
+        the confirmation that its AI has no company-data tools (required)."""
+        vals.setdefault('no_data_tools', True)
         return self.profile_for(model, enabled=True, project_id=(project or self.consult_project).id, **vals)
 
     def record(self, channel, *pairs):

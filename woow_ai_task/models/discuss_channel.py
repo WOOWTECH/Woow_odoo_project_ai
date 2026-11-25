@@ -456,8 +456,8 @@ class DiscussChannel(models.Model):
         # the AI consultant: not the chats with a consulted record the user cannot read (uncorrelated sub-queries,
         # each built once per statement), in every arm of the rule (member chats, administrators' compiled code and
         # point checks); nothing at all while consultation is unused
-        consult = self._woow_project_ai_consult_rule_domain(Task.env.user, Task.env.context.get('allowed_company_ids')
-                                                            or [])
+        consult = self._woow_project_ai_consult_rule_domain(
+            Task.env.user, Task.env.context.get('allowed_company_ids') or [], restrict_to=restrict_to)
         if consult:
             for model_name, field_name in self._woow_project_ai_consult_rule_fields():
                 self.env[model_name].flush_model([field_name])  # raw SQL in the terms: not in to_flush
@@ -474,7 +474,7 @@ class DiscussChannel(models.Model):
         return sorted(row[0] for row in self.env.execute_query(sql))
 
     @api.model
-    def _woow_project_ai_consult_rule_domain(self, user, companies):
+    def _woow_project_ai_consult_rule_domain(self, user, companies, restrict_to=None):
         """The AI consultant's part of `user`'s rule (ANDed into
         _woow_project_ai_readable_chats_sql): [] while consultation is unused; otherwise
         no chat with a ledger row of a record `user` may not read for the
@@ -485,14 +485,26 @@ class DiscussChannel(models.Model):
         not executed: the same answer as the record predicate
         (project.task._woow_project_ai_consult_user_ok). Only uncorrelated
         sub-queries (no 'any', no many2many 'in' with a Query): PostgreSQL
-        hashes each once per statement instead of running it per row."""
+        hashes each once per statement instead of running it per row.
+
+        With `restrict_to` (channel ids: a member list or a point check) the
+        sub-queries are limited to the ledger rows of those chats and the
+        records linked to their tasks (PostgreSQL may still scan a small table
+        whole where that is cheaper); without it (the administrators' compiled
+        rule) they take every ledger row and every linked record."""
         state = consult_state(self.env)
         if not state.used:
             return []
         keys = sorted(consult_keys(self.env, state))
+        restricted = restrict_to is not None
+        chat_ids = sorted({chat_id for chat_id in restrict_to or () if isinstance(chat_id, int)})
         branches = []
         for model, tab in keys:
-            candidates = SQL("(SELECT res_id FROM woow_project_ai_consult_sent WHERE res_model = %s)", model)
+            if restricted:
+                candidates = SQL("(SELECT res_id FROM woow_project_ai_consult_sent WHERE res_model = %s "
+                                 "AND channel_id = ANY(%s))", model, chat_ids)
+            else:
+                candidates = SQL("(SELECT res_id FROM woow_project_ai_consult_sent WHERE res_model = %s)", model)
             readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
             if readable is None:
                 branches.append(SQL("(c.woow_project_ai_tab = %s AND s.res_model = %s)", tab, model))
@@ -505,12 +517,17 @@ class DiscussChannel(models.Model):
                                 SQL(", ").join(SQL("(%s, %s)", model, tab) for model, tab in keys)))
         else:
             branches.append(SQL("TRUE"))
+        ledger_chats = SQL(" AND s.channel_id = ANY(%s)", chat_ids) if restricted else SQL()
         domain = [('id', 'not in', SQL(
             "(SELECT s.channel_id FROM woow_project_ai_consult_sent s JOIN discuss_channel c ON c.id = s.channel_id "
-            "WHERE %s)", SQL(" OR ").join(branches)))]
+            "WHERE (%s)%s)", SQL(" OR ").join(branches), ledger_chats))]
         Task = self.env['project.task']
-        chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel "
-                             "WHERE woow_project_ai_task_id IS NOT NULL)")
+        if restricted:
+            chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel WHERE id = ANY(%s) "
+                                 "AND woow_project_ai_task_id IS NOT NULL)", chat_ids)
+        else:
+            chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel "
+                                 "WHERE woow_project_ai_task_id IS NOT NULL)")
         specs = Task._woow_project_ai_consult_specs()
         for tab in (TAB_INTERNAL, TAB_CUSTOMER):
             parts = []
@@ -523,8 +540,13 @@ class DiscussChannel(models.Model):
                     column = SQL.identifier(field.name)
                     # the candidates: every linked record (its index), not only those of tasks with chats: a join
                     # with discuss_channel here made the plan depend on its statistics (stale ones, all task ids
-                    # NULL right after the install's ANALYZE, gave a nested loop re-running it per record)
-                    candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL)", column, column)
+                    # NULL right after the install's ANALYZE, gave a nested loop re-running it per record). For
+                    # given chats: the records linked to their tasks (found by the chats' primary keys)
+                    if restricted:
+                        candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL AND id IN %s)", column,
+                                         column, chats_of_tasks)
+                    else:
+                        candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL)", column, column)
                     readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
                     if readable is None:
                         parts.append(SQL("SELECT id FROM project_task WHERE %s IS NOT NULL AND id IN %s", column,
@@ -537,7 +559,11 @@ class DiscussChannel(models.Model):
                     relation, task_column, record_column = (SQL.identifier(field.relation),
                                                             SQL.identifier(field.column1),
                                                             SQL.identifier(field.column2))
-                    candidates = SQL("(SELECT %s FROM %s)", record_column, relation)  # (as above)
+                    if restricted:  # (as above)
+                        candidates = SQL("(SELECT %s FROM %s WHERE %s IN %s)", record_column, relation, task_column,
+                                         chats_of_tasks)
+                    else:
+                        candidates = SQL("(SELECT %s FROM %s)", record_column, relation)
                     readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
                     if readable is None:
                         parts.append(SQL("SELECT %s FROM %s WHERE %s IN %s", task_column, relation, task_column,
@@ -1681,7 +1707,9 @@ class DiscussChannel(models.Model):
         one). Data, between two markers tagged with 8 random hex
         characters per request, every value cleaned (tools/record_text): the
         task summary and the consulted records, both read with the asker's own
-        rights. Every consulted record that has a line here is recorded in
+        rights; the consulted records' title carries the same tag, and once
+        the consultant was used on the database the header says only that
+        section holds them. Every consulted record that has a line here is recorded in
         the chat's ledger before the backend is called (the job commits it in
         ``before_call``): from then on the chat stays with people who can read
         it."""
@@ -1702,6 +1730,7 @@ class DiscussChannel(models.Model):
                 channel.woow_project_ai_brief_project_ids = [Command.link(task.project_id.id)]
                 self._woow_project_ai_forget_readable()
         blocks, sent, consulted = [], [], []
+        tag = delimiter_tag()
         if requester:
             members = channel._woow_project_ai_member_users()
             audience = None
@@ -1711,7 +1740,8 @@ class DiscussChannel(models.Model):
             blocks.append(task._woow_project_ai_context_block(requester, tab, audience))
             # the consulted records: in the customer chat every other person of the chat reads the answer too
             consult_audience = audience if tab == TAB_INTERNAL else members - requester
-            consult_block, sent, consulted = task._woow_project_ai_consult_block(requester, tab, consult_audience)
+            consult_block, sent, consulted = task._woow_project_ai_consult_block(requester, tab, consult_audience,
+                                                                                 tag)
             blocks.append(consult_block)
         if tab == TAB_INTERNAL and consulted:
             roles = channel._woow_project_ai_consult_role_prompts(consulted)
@@ -1725,7 +1755,7 @@ class DiscussChannel(models.Model):
             parts.append(INTERNAL_LABEL_NOTE)
         blocks = [block for block in blocks if block]
         if blocks:
-            parts.append(data_section(blocks, delimiter_tag()))
+            parts.append(data_section(blocks, tag, consult=consult_state(self.env).used))
         if sent:
             self.env[LEDGER].sudo()._woow_project_ai_record(channel, sent)
             _logger.info("Project AI task chat %s: %s consulted record(s) of %s sent to the AI", channel.id,
