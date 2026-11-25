@@ -29,7 +29,6 @@ import re
 import socket
 import threading
 import time
-import traceback
 import unicodedata
 from datetime import datetime, timezone
 
@@ -39,18 +38,11 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError, ReadTimeoutErr
 from odoo import api, models
 
 from ..tools import media
+from ..tools.logs import log_unexpected  # noqa: F401 - also imported from here by older code
 from .discuss_channel import one_line_name, trusted
 
 _logger = logging.getLogger(__name__)
 
-
-def log_unexpected(logger, message, args, error, level=logging.ERROR):
-    """Log an unexpected failure with its type and where it happened, never its
-    text: an exception's text may carry a key, a header, a URL or an upstream
-    answer (contract v1, "Secrets"). The frames show the code lines, not the
-    values."""
-    frames = ''.join(traceback.format_tb(error.__traceback__)).rstrip()
-    logger.log(level, message + ' (%s)\n%s', *args, type(error).__name__, frames)
 
 INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 INLINE_IMAGE_MESSAGES = 3  # the most recent user messages whose images may be inlined
@@ -238,8 +230,8 @@ class _StreamWatchdog:
                 sock.shutdown(socket.SHUT_RDWR)  # wakes a blocked recv()
             else:
                 self.response.close()
-        except Exception:  # noqa: BLE001 - best effort; the reader still sees `fired`
-            _logger.debug("could not cut a streamed answer at its deadline", exc_info=True)
+        except Exception as error:  # noqa: BLE001 - best effort; the reader still sees `fired`
+            log_unexpected(_logger, "could not cut a streamed answer at its deadline", (), error, logging.DEBUG)
 
 
 def attachment_raw(attachment):
@@ -954,8 +946,8 @@ class WoowProjectAiAssistantBackend(models.Model):
             try:
                 surface = channel._woow_project_ai_surface_info() or {}
                 scope_model, scope_res_id = channel._woow_project_ai_usage_scope() or (False, False)
-            except Exception:  # noqa: BLE001 - a log must never break the reply
-                _logger.exception("Project AI assistant %s: no surface for the call log", assistant.id)
+            except Exception as error:  # noqa: BLE001 - a log must never break the reply
+                log_unexpected(_logger, "Project AI assistant %s: no surface for the call log", (assistant.id,), error)
         vals = {
             'assistant_id': assistant.id,
             'connection_id': connection.id or False,
@@ -973,6 +965,9 @@ class WoowProjectAiAssistantBackend(models.Model):
             'prompt_tokens': prompt_tokens,
             'completion_tokens': completion_tokens,
             'total_tokens': total_tokens,
+            # (explicit, as every other field: no default of any kind reaches a call log)
+            'request_payload': False,
+            'response_payload': False,
         }
         if connection.log_payload:
             if log['request'] is not None:

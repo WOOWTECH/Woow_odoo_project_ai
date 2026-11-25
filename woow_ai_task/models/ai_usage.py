@@ -24,6 +24,8 @@ import logging
 from odoo import SUPERUSER_ID, api, fields, models
 from odoo.tools import sql
 
+from ..tools.logs import log_unexpected
+
 _logger = logging.getLogger(__name__)
 
 KEY_INDEX = 'woow_project_ai_usage_month_key_uniq'
@@ -148,8 +150,9 @@ class WoowProjectAiUsageMonth(models.Model):
                     env['woow.project.ai.usage.month']._add_for_channel(
                         env['discuss.channel'].browse(ids[0]), env['woow.project.ai.assistant'].browse(ids[1]),
                         env['woow.project.ai.connection'].browse(ids[2]) if ids[2] else None)
-            except Exception:  # noqa: BLE001 - the pushed message stays
-                _logger.exception("Project AI assistant %s: could not record the usage of a push", ids[1])
+            except Exception as error:  # noqa: BLE001 - the pushed message stays
+                log_unexpected(_logger, "Project AI assistant %s: could not record the usage of a push", (ids[1],),
+                               error)
 
         count_push.woow_project_ai_usage = ids
         self.env.cr.postcommit.add(count_push)

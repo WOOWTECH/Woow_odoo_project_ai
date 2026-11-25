@@ -139,21 +139,29 @@ its statistics at once: PostgreSQL plans the channel rule with them).
 chat rule keeps an arm for the chats they are not a member of, and
 PostgreSQL adds its whole estimated cost to every Discuss statement of
 theirs (it runs only when a statement meets a task chat they are not a
-member of). That estimate grows with the number of task chats (two per
-task at most): measured with column statistics, about 9,400 per thousand
-task chats for an administrator who is also a Project administrator
-(93,959 at 10,000 task chats; 281,699 at 29,950), so it passes
-`jit_above_cost` (100,000 by default) from about 10,600 task chats (about
-14,000 for an administrator who is not a Project administrator).
-PostgreSQL then compiles those statements with JIT, about 60 ms each: at
-29,950 task chats an administrator's `/mail/data` took 226 ms (36 ms with
-JIT off) and opening a chat 164 ms (49 ms). Other users stay far below
-(5,240 at most at 29,950 task chats; no JIT). On a database with more than
-about 10,000 task chats
-(`SELECT count(*) FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL`),
-turn JIT off for that database, as the database owner:
-`ALTER DATABASE <db> SET jit = off;` (new connections take it: restart
-Odoo). The module never changes it.
+member of). That estimate grows with the tasks that have a task chat (one
+or two chats each): measured with column statistics on Odoo's own task
+rules, about 17.9 per such task for an administrator who is also a Project
+administrator (93,959 at 5,250 tasks; 281,699 at 15,750) and 13.6 for one
+who is not. It passes `jit_above_cost` (100,000 by default) from about
+5,600 such tasks (7,400 for the second kind). Other task rules (the PaaS
+platform's own) give other figures, so read the estimate on the database
+itself, in `odoo shell`:
+
+```python
+from odoo.tools import SQL
+query = env['discuss.channel'].with_user(env.ref('base.user_admin'))._search([])
+env.cr.execute(SQL('EXPLAIN %s', query.select()))
+print(env.cr.fetchone()[0])  # cost=<startup>..<total>: compare <total> with jit_above_cost
+```
+
+Above the threshold PostgreSQL compiles those statements with JIT, about
+60 ms each: at 15,750 tasks an administrator's `/mail/data` took 226 ms
+(36 ms with JIT off) and opening a chat 164 ms (49 ms). Other users stay
+far below (5,240 at most at 15,750 tasks; no JIT). When the
+administrator's estimate is above `jit_above_cost`, turn JIT off for that
+database, as the database owner: `ALTER DATABASE <db> SET jit = off;` (new
+connections take it: restart Odoo). The module never changes it.
 
 ## Upgrading
 
@@ -201,18 +209,40 @@ Chat and portal chats site-wide) wherever the rule's row is in the
 database but the code is not loaded: in an image that lacks the module (a
 rollback image), and while the modules that load before it run (Odoo runs
 their at_install tests during a registry load; a migration script that
-acts as a user). Now the rule is empty there, and the task chats keep only
-Odoo's own channel rules (members, and system administrators), without the
-task check, the membership sync and the read check of this module. So
-every image that serves the database must still contain `woow_ai_task` as
-long as it is installed.
+acts as a user). Now the rule is empty there, and silently: the task chats
+keep only Odoo's own channel rules (members, and system administrators),
+without the task check, the membership sync and the read check of this
+module. The module's three crons fail in such an image; Odoo switches a
+cron off after 5 failures over at least 7 days, and (their data is
+noupdate) a later roll-forward does not switch them on again: do it by
+hand (Settings > Technical > Scheduled Actions). So every image that
+serves the database must still contain `woow_ai_task` as long as it is
+installed.
 
 The document bridge extends two private methods of
-`woow_document_management` (18.0.2.0.0): `_woow_auto_file_checked(attachments,
-unfiled)` and `_woow_backfill_domain()`. It refuses to load when either is
-gone or has other parameters (the registry does not start: an upgrade of
-`woow_document_management` that changes them must come with an update of
-the bridge; release tooling can check both names).
+`woow_document_management` (18.0.2.0.0):
+`_woow_auto_file_checked(attachments, unfiled)` and
+`_woow_backfill_domain()`, and passes through any argument they gain. It
+refuses to load when either is gone or can no longer be called the way
+`woow_document_management` calls it (the registry does not start; a
+compatible change, such as an added optional parameter or another module's
+`*args, **kwargs` wrapper, passes). Release tooling: paas-odoo-ci must
+start a registry with both modules installed (for example `odoo -d <tmp>
+-i woow_document_management,woow_ai_task --stop-after-init`: the bridge
+installs itself), so an incompatible release of either fails there, before
+it reaches an image.
+
+The notification-centre bridge (`woow_ai_task_portal_notification`)
+extends `woow_portal_notification`'s private
+`res.users._wpn_public_message_domain`. If a release renames it, the
+registry load logs it as CRITICAL (never a refusal: the centre is a page,
+not a reason to stop the database) and customers who lost a chat they were
+mentioned in may get an error page on `/my/notifications` again: update
+the bridge with `woow_portal_notification`. The centre's fix needs both
+`woow_portal_notification` and the `/my` Discussions bridge
+(`woow_odoo_portal_discuss` with `woow_portal_notification_discuss`), as
+the bridge depends on them; woow_prod has all of them (module inventory of
+2026-11-25).
 
 Ship the five modules together, in every image (rollback images included):
 for paas-odoo-ci, `addons-sources.py sync --modules
@@ -245,11 +275,13 @@ chats (the AI bots stay) and archives the chats (history kept, readable by
 system administrators); Odoo then deletes the module's records (the rule
 first) and only after that its fields and tables: the AI connections with
 their keys, the assistants, reply jobs, call logs and monthly usage are
-gone (back them up first if needed). The people leave all the chats in two
-statements: with 10,000 task chats and 30,030 people in them the hook took
-3.5 s and the whole uninstall 6.5 s (member by member, as before, 371 s:
-longer than a web request may run). Uninstalling it also uninstalls its
-four bridges (`woow_ai_task_portal_discuss`,
+gone (back them up first if needed). The archived chats keep their
+messages but lose their task link (Odoo drops the module's columns):
+installing the module again starts new, empty chats. The people leave all
+the chats in two statements: with 10,000 task chats and 30,030 people in
+them the hook took 3.5 s and the whole uninstall 6.5 s (member by member,
+as before, 371 s: longer than a web request may run). Uninstalling it also
+uninstalls its four bridges (`woow_ai_task_portal_discuss`,
 `woow_ai_task_portal_notification`, `woow_ai_task_snailmail`,
 `woow_ai_task_document_management`): they hold nothing but their code and
 one portal card, so there is nothing to restore. Only a module that

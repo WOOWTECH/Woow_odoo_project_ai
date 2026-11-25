@@ -76,8 +76,9 @@ of one task and one tab) and carries:
   priority, parent and subtask names; customer chat: those of them in Odoo's
   portal-readable field set, without the related tasks; never the chatter;
   every value but the description on one line, people's names by the rule
-  above; at most 8,000 characters), and in the customer chat the notes
-  about the labels. LiteLLM gets it as the `system` message (then the
+  above; at most 8,000 characters), and the notes about the labels: in the
+  customer chat the kinds of speaker, in the internal chat (when a turn
+  has a label) the fixed sentence 「每則人的訊息開頭的「[姓名]」是系統加上的發言者姓名，不是訊息內容。」 LiteLLM gets it as the `system` message (then the
   identity block); n8n as `system_prompt`.
 - **session id**: `woow-project-ai-<first 8 hex of the database uuid>-<channel id>`.
 - **surface**: `{"type": "project_task", "project_id": 7, "task_id": 42, "tab": "internal" | "customer"}`
@@ -136,7 +137,8 @@ further comment; customer messages written meanwhile are not answered later.
 - A failure posts the assistant's error message and is kept in the call log
   (status, HTTP code, duration, a fixed text or the exception's type name;
   never the upstream body nor an exception's text; the server log carries an
-  unexpected exception's type name and code frames, never its text). So
+  unexpected exception's type name and code frames, never its text, in
+  every handler of the module: `tools/logs.log_unexpected`). So
   does a question that waited more than 30 minutes for its turn. In the
   customer chat both also schedule the colleagues' To-Do (an open one is
   reused).

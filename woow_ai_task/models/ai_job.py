@@ -75,7 +75,8 @@ from odoo.tools import config
 from odoo.tools.misc import clean_context
 
 from ..tools.dispatcher import BUSY, FAILED, Dispatcher
-from .ai_assistant_backend import N8N_MAX_TIMEOUT, log_unexpected
+from ..tools.logs import log_unexpected
+from .ai_assistant_backend import N8N_MAX_TIMEOUT
 from .project_project import TAB_CUSTOMER
 from .project_task import ALERT_FAILED, ALERT_HANDOFF
 
@@ -267,8 +268,8 @@ def _report_runner_state(cr):
                         statement_timestamp() AT TIME ZONE 'UTC')
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, write_date = EXCLUDED.write_date
             """, (STATE_PARAM, json.dumps(_local_runner_view(), sort_keys=True), SUPERUSER_ID, SUPERUSER_ID))
-    except Exception:  # noqa: BLE001
-        _logger.warning("Project AI: could not report the cron runner state", exc_info=True)
+    except Exception as error:  # noqa: BLE001
+        log_unexpected(_logger, "Project AI: could not report the cron runner state", (), error, logging.WARNING)
         return
     _state_written[cr.dbname] = time.monotonic()
 
@@ -378,8 +379,8 @@ def _job_worker(db_name, job_id, wait=True):
             if not next_id or (next_id == job_id and not deferred):
                 return
             job_id, first, wait = next_id, False, True
-    except Exception:  # noqa: BLE001 - a background thread must never die loudly
-        _logger.exception("Project AI job worker failed (job %s)", job_id)
+    except Exception as error:  # noqa: BLE001 - a background thread must never die loudly
+        log_unexpected(_logger, "Project AI job worker failed (job %s)", (job_id,), error)
 
 
 def _recovery_worker(db_name, job_ids):
@@ -486,8 +487,8 @@ class _TypingHub:
                         member = Member.search([('channel_id', '=', key[1]), ('partner_id', '=', key[2])], limit=1)
                         if member:
                             member._notify_typing(True)
-            except Exception:  # noqa: BLE001 - typing is cosmetic
-                _logger.warning("Project AI: typing refresh failed (%s)", db_name, exc_info=True)
+            except Exception as error:  # noqa: BLE001 - typing is cosmetic
+                log_unexpected(_logger, "Project AI: typing refresh failed (%s)", (db_name,), error, logging.WARNING)
             with self._lock:
                 for key in db_keys:
                     if key in self._entries:
@@ -537,13 +538,22 @@ class WoowProjectAiJob(models.Model):
 
     @api.model
     def _create_for_message(self, channel, assistant, message):
-        # never the client's default_* keys (default_state, default_started_at, default_run_count...: a post
-        # applies the client's context to the request): the row starts pending, never run
+        # explicit values only: never the client's default_* keys (default_state, default_started_at,
+        # default_run_count...: a post applies the client's context to the request), nor the poster's own
+        # ir.default rows (any employee may set personal defaults on any model): the row starts pending, never run
         job = self.sudo().with_context(clean_context(self.env.context)).create({
             'channel_id': channel.id,
             'assistant_id': assistant.id,
             'message_id': message.id,
+            'kind': 'reply',
+            'state': 'pending',
+            'run_count': 0,
             'run_after': fields.Datetime.now() + timedelta(seconds=DEBOUNCE_SECONDS),
+            'started_at': False,
+            'finished_at': False,
+            'error': False,
+            'context_message_id': 0,
+            'reply_message_id': False,
         })
         job._schedule_dispatch()
         return job
@@ -578,8 +588,8 @@ class WoowProjectAiJob(models.Model):
                 try:
                     threading.Thread(target=_job_worker, args=(db_name, job_id),
                                      name='woow_ai_task.job.%s' % job_id, daemon=False).start()
-                except Exception:  # noqa: BLE001 - the cron recovers the job
-                    _logger.exception("Could not start project AI job %s", job_id)
+                except Exception as error:  # noqa: BLE001 - the cron recovers the job
+                    log_unexpected(_logger, "Could not start project AI job %s", (job_id,), error)
 
         start_project_ai_job_threads.woow_project_ai_job_ids = job_ids
         self.env.cr.postcommit.add(start_project_ai_job_threads)
@@ -790,8 +800,8 @@ class WoowProjectAiJob(models.Model):
                 self._unlock_channel(channel_id)
                 if commit:
                     cr.commit()
-            except Exception:  # noqa: BLE001 - never return a pooled connection holding the lock
-                _logger.exception("Project AI job %s: could not release the channel lock", self.id)
+            except Exception as error:  # noqa: BLE001 - never return a pooled connection holding the lock
+                log_unexpected(_logger, "Project AI job %s: could not release the channel lock", (self.id,), error)
                 cr.rollback()
                 cr.execute("SELECT pg_advisory_unlock_all()")
         return channel_id, True
@@ -902,8 +912,9 @@ class WoowProjectAiJob(models.Model):
             ], limit=1)
             if member:
                 member._notify_typing(is_typing)
-        except Exception:  # noqa: BLE001 - typing is cosmetic
-            _logger.warning("Project AI job %s: could not send typing=%s", self.id, is_typing, exc_info=True)
+        except Exception as error:  # noqa: BLE001 - typing is cosmetic
+            log_unexpected(_logger, "Project AI job %s: could not send typing=%s", (self.id, is_typing), error,
+                           logging.WARNING)
 
     def _skip_reply(self, commit_step):
         """Finish a reply job without calling the backend when it must not
@@ -966,8 +977,9 @@ class WoowProjectAiJob(models.Model):
             try:
                 with self.env.cr.savepoint():
                     task._woow_project_ai_alert_activity(ALERT_HANDOFF, reason=reason, minutes=minutes)
-            except Exception:  # noqa: BLE001 - the posted reply and the pause stay (no second backend call)
-                _logger.exception("Task %s: could not schedule the To-Do of a customer handoff", task.id)
+            except Exception as error:  # noqa: BLE001 - the posted reply and the pause stay (no second call)
+                log_unexpected(_logger, "Task %s: could not schedule the To-Do of a customer handoff", (task.id,),
+                               error)
         self._finish('done', False, reply_message=messages.sorted('id')[-1:] or None)
         self._supersede_older()
         commit_step()
@@ -988,8 +1000,9 @@ class WoowProjectAiJob(models.Model):
             return assistant.error_message.strip()
         try:
             lang = self.channel_id.sudo()._woow_project_ai_identity(assistant, self.message_id).get('lang')
-        except Exception:  # noqa: BLE001 - the error message must always be posted
-            _logger.warning("Project AI job %s: no identity language for the error message", self.id, exc_info=True)
+        except Exception as error:  # noqa: BLE001 - the error message must always be posted
+            log_unexpected(_logger, "Project AI job %s: no identity language for the error message", (self.id,),
+                           error, logging.WARNING)
             lang = None
         return self.with_context(lang=assistant._installed_lang(lang)).env._(
             'Sorry, I cannot answer right now. Please try again later.')
@@ -1007,9 +1020,9 @@ class WoowProjectAiJob(models.Model):
             try:
                 with self.env.cr.savepoint():
                     channel.woow_project_ai_task_id._woow_project_ai_alert_activity(ALERT_FAILED)
-            except Exception:  # noqa: BLE001 - the error message stays
-                _logger.exception("Task %s: could not schedule the To-Do of a failed customer answer",
-                                  channel.woow_project_ai_task_id.id)
+            except Exception as error:  # noqa: BLE001 - the error message stays
+                log_unexpected(_logger, "Task %s: could not schedule the To-Do of a failed customer answer",
+                               (channel.woow_project_ai_task_id.id,), error)
         self._notify_failure(error, user_told=True)
 
     def _record_usage(self, ok, call_log=None):
@@ -1029,8 +1042,8 @@ class WoowProjectAiJob(models.Model):
                     channel, assistant, connection, ok=ok,
                     prompt_tokens=call_log.prompt_tokens if call_log else 0,
                     completion_tokens=call_log.completion_tokens if call_log else 0)
-        except Exception:  # noqa: BLE001
-            _logger.exception("Project AI job %s: could not record the monthly usage", self.id)
+        except Exception as error:  # noqa: BLE001
+            log_unexpected(_logger, "Project AI job %s: could not record the monthly usage", (self.id,), error)
 
     def _notify_failure(self, reason, user_told=True):
         """A reply failed (log only).

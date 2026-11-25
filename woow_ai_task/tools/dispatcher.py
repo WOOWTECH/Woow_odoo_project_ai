@@ -35,6 +35,8 @@ import logging
 import threading
 import time
 
+from .logs import log_unexpected
+
 _logger = logging.getLogger(__name__)
 
 BUSY = 'busy'
@@ -72,8 +74,8 @@ class Dispatcher:
         if not self._stopped and self.should_stop is not None:
             try:
                 self._stopped = bool(self.should_stop())
-            except Exception:  # noqa: BLE001 - a broken check must not stop the replies
-                _logger.warning("%s: stop check failed", self.name, exc_info=True)
+            except Exception as error:  # noqa: BLE001 - a broken check must not stop the replies
+                log_unexpected(_logger, "%s: stop check failed", (self.name,), error, logging.WARNING)
             if self._stopped:
                 self.stats['stopped'] = True
                 _logger.info("%s: server is stopping, no new replies are started", self.name)
@@ -89,8 +91,8 @@ class Dispatcher:
         result = FAILED
         try:
             result = self.run_unit(key, self.may_continue)
-        except Exception:  # noqa: BLE001 - one conversation must not stop the others
-            _logger.exception("%s: unit %s failed", self.name, key)
+        except Exception as error:  # noqa: BLE001 - one conversation must not stop the others
+            log_unexpected(_logger, "%s: unit %s failed", (self.name, key), error)
         finally:
             self._results[key] = result
             self._wake.set()
@@ -126,9 +128,9 @@ class Dispatcher:
         self.stats['fetches'] += 1
         try:
             units, next_due = self.fetch(exclude, limit)
-        except Exception:  # noqa: BLE001 - logged; the next wake-up (or the next pass) fetches again
+        except Exception as error:  # noqa: BLE001 - logged; the next wake-up (or the next pass) fetches again
             self.stats['fetch_errors'] += 1
-            _logger.exception("%s: fetching due work failed", self.name)
+            log_unexpected(_logger, "%s: fetching due work failed", (self.name,), error)
             return [], None
         return list(units or [])[:max(0, limit)], next_due
 

@@ -252,25 +252,47 @@ class TestR6Review(R6Helpers, AiTaskFixtures, TransactionCase):
             self.skipTest('woow_document_management is not installed')
         from odoo.addons.woow_ai_task_document_management.models import autofile  # noqa: PLC0415
         Rule = self.env['woow.document.auto.rule']
-        # woow_document_management defines both hooks, with the parameters the bridge extends
+        # woow_document_management defines both hooks, callable the way it calls them
         self.assertEqual(autofile.missing_hooks(type(Rule), autofile.WoowDocumentAutoRule), [])
 
-        class Base:
-            def _woow_backfill_domain(self):
-                return []
+        def chain(**hooks):
+            base = type('Base', (), hooks)
+            bridge = type('Bridge', (base,), {})
+            return type('Model', (bridge,), {}), bridge
 
-            def _woow_auto_file_checked(self, attachments):  # one parameter fewer
-                return attachments
+        def backfill(self):
+            return []
 
-        class Bridge(Base):
-            pass
+        def checked(self, attachments, unfiled):
+            return attachments
 
-        class Model(Bridge):
-            pass
-        self.assertEqual(autofile.missing_hooks(Model, Bridge), ['_woow_auto_file_checked'])
+        # (round 7) the call's shape, not the parameter names: compatible changes pass...
+        for label, hook in (
+                ('an added optional keyword', lambda self, attachments, unfiled, *, force=False: attachments),
+                ('a wrapper of another module', lambda self, *args, **kwargs: None),
+                ('renamed parameters', lambda self, files, still_unfiled: files),
+                ('an added trailing default', lambda self, attachments, unfiled, extra=None: attachments)):
+            with self.subTest(change=label):
+                model, bridge = chain(_woow_backfill_domain=backfill, _woow_auto_file_checked=hook)
+                self.assertEqual(autofile.missing_hooks(model, bridge), [])
+        # ...a hook that is gone or cannot take the call does not
+        model, bridge = chain(_woow_backfill_domain=backfill,
+                              _woow_auto_file_checked=lambda self, attachments: attachments)  # one fewer
+        self.assertEqual(autofile.missing_hooks(model, bridge), ['_woow_auto_file_checked'])
+        model, bridge = chain(_woow_auto_file_checked=checked,
+                              _woow_backfill_domain=lambda self, rule_id: [])  # a new required argument
+        self.assertEqual(autofile.missing_hooks(model, bridge), ['_woow_backfill_domain'])
+        model, bridge = chain(_woow_backfill_domain=backfill)
+        self.assertEqual(autofile.missing_hooks(model, bridge), ['_woow_auto_file_checked'])
         with patch.object(autofile, 'missing_hooks', return_value=['_woow_backfill_domain']), \
                 self.assertRaises(RuntimeError):
             Rule._register_hook()
+        # the overrides pass through whatever the base module passes
+        rule = Rule.new({'res_model': 'res.partner'})
+        with patch.object(type(Rule).__mro__[type(Rule).__mro__.index(autofile.WoowDocumentAutoRule) + 1],
+                          '_woow_backfill_domain', return_value=[('id', '>', 0)]) as base:
+            self.assertEqual(rule._woow_backfill_domain(force=True), [('id', '>', 0)])
+        self.assertEqual(base.call_args.kwargs, {'force': True})
 
     # --- 18: the rule is read from the cache, not copied ---
 

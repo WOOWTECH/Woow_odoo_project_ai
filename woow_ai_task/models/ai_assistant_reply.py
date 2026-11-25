@@ -24,8 +24,9 @@ from markupsafe import Markup
 from odoo import models
 
 from ..tools import media
+from ..tools.logs import log_unexpected
 from ..tools.markdown import markdown_to_html
-from .ai_assistant_backend import log_unexpected, strip_think
+from .ai_assistant_backend import strip_think
 from .discuss_channel import trusted
 
 _logger = logging.getLogger(__name__)

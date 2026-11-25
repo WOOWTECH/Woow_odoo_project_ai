@@ -348,6 +348,8 @@ class MailMessage(models.Model):
         in_chats = self.browse([id_ for id_, chat in channel_of.items() if chat in chats])
         if self - in_chats:
             super(MailMessage, self - in_chats)._notify_message_notification_update()
+        if not in_chats:
+            return  # (round 7: no statement for the ordinary delivery-failure notices)
         acting = self.env.user
         # (the authors in SQL: the acting user may be one who cannot read a chat of these)
         self.flush_recordset(['author_id'])
