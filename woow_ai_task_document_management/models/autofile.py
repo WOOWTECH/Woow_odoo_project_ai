@@ -13,8 +13,8 @@ TASK_CHATS = "(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS N
 # overrides would be dead code and filing rules would copy task-chat files again, or every filing would fail
 # silently in the base module's catch-all; so the registry refuses to load instead. A compatible change (an
 # added optional parameter, another module's `*args, **kwargs` wrapper, renamed parameters) passes: the test is
-# the call's shape, not the parameter names. paas-odoo-ci's release checks start a registry with both modules
-# installed (README, "Once installed")
+# the call's shape, not the parameter names. A release's checks start a registry with both modules installed
+# (README, "Once installed")
 REQUIRED_HOOKS = {
     '_woow_auto_file_checked': (None, 'attachments', 'unfiled'),
     '_woow_backfill_domain': (None,),

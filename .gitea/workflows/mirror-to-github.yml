@@ -1,6 +1,6 @@
 # Push Gitea main and tags to the GitHub mirror WOOWTECH/Woow_odoo_project_ai.
 #
-# Gitea (git-prod.woowtech.io) is the source of truth; GitHub only receives
+# Gitea is the source of truth; GitHub only receives
 # what lands here. Send changes as Gitea PRs; do not commit to GitHub directly.
 #
 # Gitea's built-in push mirror rejects SSH, and HTTPS would need a GitHub token

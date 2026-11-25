@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the team review of PR #1 (review-pai1/REVIEW.md: the
-item numbers are in the test names). Downloads (2, 6, 7) are in test_media /
+"""Regression tests of the team review (the item numbers are in the test
+names). Downloads (2, 6, 7) are in test_media /
 test_job, the dispatchers (28, 35, 36) in test_dispatch, the Markdown
 nesting (27) in test_markdown, the portal counters (3, 10, 38) in
 test_coexistence."""

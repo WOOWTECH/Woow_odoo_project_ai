@@ -21,7 +21,7 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 | 專案 AI（本 repo） | `woow_ai_task` | Gitea `woow-paas/Woow_odoo_project_ai` |
 | Live Chat AI | `im_livechat_ai` | GitHub `WOOWTECH/Woow_odoo_ai_livechat` |
 
-本 repo 的模組（`woow_ai_task` 和它的四個橋接模組）：
+本 repo 的模組（`woow_ai_task` 和它的五個橋接模組）：
 
 | 模組 | 版本 | 內容 |
 |---|---|---|
@@ -30,6 +30,7 @@ Odoo 18 模組：**專案 AI**。專案替每個對話選一個 **AI 助理**，
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | 橋接模組，裝了 `woow_portal_notification_discuss` 就自動安裝：通知中心的未讀對話數只算 `/my/discussions` 列出的對話；客戶的任務 AI 對話未讀訊息另有通知和 `/my` 卡片，連到任務頁 |
 | `woow_ai_task_snailmail` | 18.0.1.0.0 | 橋接模組，裝了 `snailmail`（Odoo 裝 `mail` 時會一起裝）就自動安裝：任務 AI 對話的檔案永遠不會放進郵寄信件 |
 | `woow_ai_task_document_management` | 18.0.1.0.0 | 橋接模組，裝了 `woow_document_management` 就自動安裝：歸檔規則永遠不會把任務 AI 對話的檔案複製到文件資料夾 |
+| `woow_ai_task_paas` | 18.0.1.0.0 | 橋接模組，裝了 PaaS 平台（`woow_paas_platform`）就自動安裝：`/woow` 任務頁的客戶 AI 對話、停用平台舊的任務 AI（不刪除）、任務對話成員跟著 workspace 成員和服務綁定、只有專案經理能設定專案 AI（[docs/PAAS.md](docs/PAAS.md)） |
 
 ## 對齊（合約 v1.2）
 
@@ -47,7 +48,7 @@ Discuss AI、專案 AI、Live Chat AI 靠同一份書面合約維持一致的設
 
 ## 安裝
 
-1. 把整個 repo 放進 addons path：四個橋接模組也要在，Odoo 才會在安裝它們橋接的模組時一起裝上。
+1. 把整個 repo 放進 addons path：五個橋接模組也要在，Odoo 才會在安裝它們橋接的模組時一起裝上。
 2. 安裝「Project AI」（`woow_ai_task`），相依 `project`、`mail`、`portal`、`bus`、`web`；內含繁體中文翻譯。
 3. 設定在「專案 > 配置 > 專案 AI」（限系統管理員）：「AI 連線」「AI 助理」「回覆工作」「呼叫紀錄」「AI 用量」。再到各專案表單的「AI 助理」頁選助理。
 
@@ -81,24 +82,30 @@ print(env.cr.fetchone()[0])  # cost=<起始>..<總計>：拿 <總計> 和 jit_ab
 
 兩個 AI 模組（本模組和 `woow_ai_contact`）各有一個優先順序 1 的回覆派送排程，每一輪會佔住一個排程執行緒：最長是它的視窗 + 最長的連線逾時 + 60 秒。
 
-- 每個 AI 派送排程一個執行緒，其他排程再一個：同一個資料庫裝了兩個模組（woow_prod）時，`max_cron_threads` 至少 3。
+- 每個 AI 派送排程一個執行緒，其他排程再一個：同一個資料庫裝了兩個模組時，`max_cron_threads` 至少 3。
 - AI 派送排程和排程執行緒一樣多時（例如 2 和 2），兩邊都改用短的一輪（60 秒視窗、等 5 秒），其他排程（部署、寄信佇列）在輪與輪之間才排得到。
 - 只有一個排程執行緒時，`limit_time_real_cron` 要容得下兩輪（Discuss AI 的先跑）；不夠時本模組的回覆改用執行緒模式。剩下的時間不夠回一則時，這一輪不開始回覆，稍後再跑。
 - 執行緒式（threaded）排程程序的 `db_maxconn` 至少是兩個模組的同時回覆數相加再加 6。
 
-## 裝了以後：每個映像都要帶著這五個模組
+### 在 PaaS 平台上
+
+在裝了 `woow_paas_platform` 的資料庫安裝 `woow_ai_task`，橋接模組 `woow_ai_task_paas` 會在同一次操作裡一起裝上，不用另外做什麼。它把客戶 AI 對話放到 `/woow` 的任務頁（內部對話留在後台任務表單），停用平台舊的任務 AI（不刪任何東西），讓任務對話的成員跟著 PaaS 的權限變動，並且只讓專案經理和系統管理員設定專案的 AI 助理和專案說明。`/woow` 的「專案」區只在平台設定「Show Projects (/woow)」打開的網站出現（橋接模組不改這個設定）；其他網站的客戶從 `/my/tasks/<id>` 任務頁使用客戶 AI 對話。誰能用任務的客戶 AI 對話，跟著誰讀得到這張任務（今天後台的可見範圍：專案經理和專案使用者讀得到每個 workspace 分享給 portal 的專案的任務）；只讓服務所屬 workspace 的成員使用，是之後版本的計畫。細節、舊任務 AI 的開關、平台介面清單和回復：[docs/PAAS.md](docs/PAAS.md)。
+
+## 裝了以後：每個映像都要帶著這些模組
 
 模組在 `discuss.channel` 加了一條**全域 record rule**，規則用到本模組的計算欄位，還有畫面和排程。這條規則只在本模組的程式有載入時才生效（規則先確認本模組的欄位在 registry 裡）。沒有這個確認時，只要資料庫裡有這條規則、程式卻沒載入，每個非 superuser 的頻道存取都會因為欄位不存在而出錯（Discuss、Live Chat、portal 對話全站壞掉）：映像裡少了這個模組（例如回復用的舊映像），或比它先載入的模組在跑的時候（Odoo 在載入 registry 時跑它們的 at_install 測試；以使用者身分執行的 migration script）。現在這些情況下規則是空的，而且不會有任何錯誤訊息：任務對話只剩 Odoo 自己的頻道規則（成員和系統管理員讀得到），沒有任務權限檢查、成員同步和本模組的讀取檢查。本模組的三個排程在這種映像裡每次都會失敗；Odoo 在失敗 5 次、至少 7 天後會把排程關掉，而排程資料是 noupdate，之後換回正確映像也不會自動打開：請手動打開（設定 > 技術 > 排程動作）。所以只要資料庫裝著 `woow_ai_task`，每個服務這個資料庫的映像仍然都必須帶著它。
 
-文件橋接模組延伸 `woow_document_management`（18.0.2.0.0）的兩個內部方法：`_woow_auto_file_checked(attachments, unfiled)` 和 `_woow_backfill_domain()`，對方多傳的參數會原樣傳下去。任何一個不見了、或已經不能用 `woow_document_management` 呼叫它的方式呼叫，它就拒絕載入（registry 起不來）；相容的改動（例如多一個選用參數、別的模組用 `*args, **kwargs` 包一層）不受影響。發版工具：paas-odoo-ci 必須在兩個模組都裝上的情況下啟動一次 registry（例如 `odoo -d <暫用資料庫> -i woow_document_management,woow_ai_task --stop-after-init`，橋接模組會自動裝上），不相容的版本就會在那裡失敗，進不了映像。
+文件橋接模組延伸 `woow_document_management`（18.0.2.0.0）的兩個內部方法：`_woow_auto_file_checked(attachments, unfiled)` 和 `_woow_backfill_domain()`，對方多傳的參數會原樣傳下去。任何一個不見了、或已經不能用 `woow_document_management` 呼叫它的方式呼叫，它就拒絕載入（registry 起不來）；相容的改動（例如多一個選用參數、別的模組用 `*args, **kwargs` 包一層）不受影響。發版工具必須在兩個模組都裝上的情況下啟動一次 registry（例如 `odoo -d <暫用資料庫> -i woow_document_management,woow_ai_task --stop-after-init`，橋接模組會自動裝上），不相容的版本就會在那裡失敗，進不了映像。
 
-通知中心橋接模組（`woow_ai_task_portal_notification`）延伸 `woow_portal_notification` 的內部方法 `res.users._wpn_public_message_domain`。如果新版改掉這個名稱，registry 載入時會記一筆 CRITICAL（不會拒絕啟動：通知中心只是一個頁面，不值得讓整個資料庫停擺），失去對話的客戶開 `/my/notifications` 時可能又看到錯誤頁：請連同 `woow_portal_notification` 一起更新橋接模組。通知中心的修正需要 `woow_portal_notification` 和 `/my` 討論的橋接（`woow_odoo_portal_discuss` 加 `woow_portal_notification_discuss`）都裝上，因為橋接模組相依它們；woow_prod 都有（2026-11-25 的模組盤點）。
+通知中心橋接模組（`woow_ai_task_portal_notification`）延伸 `woow_portal_notification` 的內部方法 `res.users._wpn_public_message_domain`。如果新版改掉這個名稱，registry 載入時會記一筆 CRITICAL（不會拒絕啟動：通知中心只是一個頁面，不值得讓整個資料庫停擺），失去對話的客戶開 `/my/notifications` 時可能又看到錯誤頁：請連同 `woow_portal_notification` 一起更新橋接模組。通知中心的修正需要 `woow_portal_notification` 和 `/my` 討論的橋接（`woow_odoo_portal_discuss` 加 `woow_portal_notification_discuss`）都裝上，因為橋接模組相依它們。
 
-五個模組一起放進每個映像（回復用的映像也是）：paas-odoo-ci 用 `addons-sources.py sync --modules woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail,woow_ai_task_document_management`，`paas-addons.list` 和 `cloud-addons.list` 也寫這五個名稱。Odoo 只在橋接模組的某個相依模組正在安裝時才會自動裝它；`-u`、`-u all` 和「更新應用程式清單」都不會安裝新模組。所以橋接模組比 `woow_ai_task` 和它橋接的 portal 模組晚到資料庫時，要明確安裝（沒有副作用）：裝了 `woow_odoo_portal_discuss` 的資料庫 `-i woow_ai_task_portal_discuss`，裝了 `woow_portal_notification_discuss` 的 `-i woow_ai_task_portal_notification`，裝了 `snailmail` 的 `-i woow_ai_task_snailmail`，裝了 `woow_document_management` 的 `-i woow_ai_task_document_management`（或從「應用程式」安裝）。另一邊沒裝的資料庫不要裝橋接模組：會連另一邊一起裝上。
+PaaS 橋接模組不在資料庫裡存任何需要它自己程式的東西（沒有畫面、欄位、規則、篩選、動作、排程、資產：表單的改動在程式裡做，它的系統參數只有它自己讀）。不帶它、手動啟動的 Odoo 照樣服務資料庫，但平台舊的任務 AI 不再被擋。PaaS 平台自己的部署根本走不到那一步：它會拒絕啟動少了任何已安裝模組程式的映像，網站會停住，直到換回帶著這些模組的映像。所以專案 AI 裝上以後，少了這六個模組的映像就不是回復目標；安裝之前，要先確定現在跑的映像和回復時會退回的上一個映像都帶著這六個模組。詳見 [docs/PAAS.md](docs/PAAS.md) 的「回復用的映像」。
+
+這些模組一起放進每個服務這個資料庫的映像（回復用的映像也是）：裝了 PaaS 平台的資料庫是六個（`woow_ai_task` 和它的五個橋接模組），其他網站是另外五個（PaaS 橋接模組在那裡沒有用處：它只跟著平台安裝）。資料庫之後裝的本 repo 模組（例如 CRM 範本 `woow_ai_task_crm`，不會自動安裝）裝上以後，每個服務那個資料庫的映像也都要帶著它。少了 PaaS 橋接模組，平台舊的任務 AI 會再回應。映像一律從發版 tag `v<woow_ai_task 版本>`（只有橋接模組改變時加 `-N`）建，不要用沒有 tag 的合併提交。Odoo 只在橋接模組的某個相依模組正在安裝時才會自動裝它；`-u`、`-u all` 和「更新應用程式清單」都不會安裝新模組。所以橋接模組比 `woow_ai_task` 和它橋接的 portal 模組晚到資料庫時，要明確安裝（沒有副作用）：裝了 `woow_odoo_portal_discuss` 的資料庫 `-i woow_ai_task_portal_discuss`，裝了 `woow_portal_notification_discuss` 的 `-i woow_ai_task_portal_notification`，裝了 `snailmail` 的 `-i woow_ai_task_snailmail`，裝了 `woow_document_management` 的 `-i woow_ai_task_document_management`，裝了 `woow_paas_platform` 的 `-i woow_ai_task_paas`（或從「應用程式」安裝）。另一邊沒裝的資料庫不要裝橋接模組：會連另一邊一起裝上。
 
 從「應用程式」或 `odoo shell` 做的模組操作（安裝、升級、解除安裝：`button_immediate_*`）在資料庫有任何排程正在執行時會被拒絕（畫面會說 Odoo 正在處理排程動作），而 AI 派送排程（本模組和 `woow_ai_contact` 的）和成員同步掃描每一輪都佔著自己的排程。請在空檔操作；或先把系統參數 `woow_ai_task.job_runner`（和 `woow_ai_contact.job_runner`）設成 `thread`，等目前這一輪結束；或停掉排程程序（排程 pod 設 `max_cron_threads=0`）再試。命令列的 `odoo -i`／`-u` 不受這個鎖影響。
 
-要拿掉時，**在帶著這個模組的映像上解除安裝**。解除安裝會先關掉那條全域規則，把任務對話的人都移出（AI 機器人留下）、對話封存（歷史保留、只有系統管理員讀得到）；Odoo 接著先刪本模組的資料（規則先刪），最後才刪欄位與資料表：AI 連線和它們的金鑰、AI 助理、回覆工作、呼叫紀錄、每月用量都會消失（需要的話先備份）。封存的對話保留訊息，但會失去和任務的連結（Odoo 會刪掉本模組的欄位）：之後再安裝，會開始新的空白對話。人員用兩個 SQL 指令一次移出所有對話：1 萬個任務對話、裡面共 30,030 人時，這一步 3.5 秒、整個解除安裝 6.5 秒（以前一個一個移出要 371 秒，超過網頁請求能跑的時間）。解除安裝它也會一起解除安裝四個橋接模組（`woow_ai_task_portal_discuss`、`woow_ai_task_portal_notification`、`woow_ai_task_snailmail`、`woow_ai_task_document_management`）：它們只有程式和一張 portal 卡片，沒有東西需要還原。只有必須留著、又相依它的模組（例如日後相依它的 PaaS 平台）才會擋住解除安裝：那時只能往前修，或還原升級前的資料庫與檔案庫快照。
+要拿掉時，**在帶著這個模組的映像上解除安裝**。解除安裝會先關掉那條全域規則，把任務對話的人都移出（AI 機器人留下）、對話封存（歷史保留、只有系統管理員讀得到）；Odoo 接著先刪本模組的資料（規則先刪），最後才刪欄位與資料表：AI 連線和它們的金鑰、AI 助理、回覆工作、呼叫紀錄、每月用量都會消失（需要的話先備份）。封存的對話保留訊息，但會失去和任務的連結（Odoo 會刪掉本模組的欄位）：之後再安裝，會開始新的空白對話。人員用兩個 SQL 指令一次移出所有對話：1 萬個任務對話、裡面共 30,030 人時，這一步 3.5 秒、整個解除安裝 6.5 秒（以前一個一個移出要 371 秒，超過網頁請求能跑的時間）。解除安裝它也會一起解除安裝五個橋接模組（`woow_ai_task_portal_discuss`、`woow_ai_task_portal_notification`、`woow_ai_task_snailmail`、`woow_ai_task_document_management`、`woow_ai_task_paas`）；PaaS 平台會留著。前四個只有程式和一張 portal 卡片，沒有東西需要還原。只有必須留著、又相依它的模組（例如日後相依它的 PaaS 平台）才會擋住解除安裝：那時只能往前修，或還原升級前的資料庫與檔案庫快照。在 PaaS 平台上這不是例行的回復步驟（往前修、退回仍帶著六個模組的映像、或還原安裝前的快照：見 docs/PAAS.md），`woow_ai_task_paas` 也永遠不能單獨解除安裝（會被拒絕：舊的任務 AI 會回來）。
 
 `odoo-bin neutralize`（測試用副本）：AI 連線清空網址與金鑰並封存，n8n 的「可給客戶使用」取消，推送金鑰撤銷；每個資料表都先用 `to_regclass` 檢查。
 
@@ -106,6 +113,7 @@ print(env.cr.fetchone()[0])  # cost=<起始>..<總計>：拿 <總計> 和 jit_ab
 
 - 兩種後端的格式、推送 API、簽名下載網址、回覆呈現、用量：[docs/PROTOCOL.md](docs/PROTOCOL.md)。
 - 行為細節：[docs/PROJECT.md](docs/PROJECT.md)。
+- 在 PaaS 平台上：[docs/PAAS.md](docs/PAAS.md)。
 
 ## 隱私與安全
 

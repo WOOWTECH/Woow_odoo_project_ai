@@ -8,7 +8,7 @@ from . import test_backend
 from . import test_job
 from . import test_dispatch
 from . import test_documents
-# task chats (ported from PR #4)
+# task chats (ported from the earlier task AI module)
 from . import test_config
 from . import test_channels
 from . import test_membership

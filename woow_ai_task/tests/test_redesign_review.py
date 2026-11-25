@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the review of the redesign (f5dfcc0..4a015d8,
-review-pai1-redesign/REVIEW.md: the item numbers are in the test names),
-with the reports' payloads: the task-chat cache that remembers only channels
+"""Regression tests of the review of the redesign (f5dfcc0..4a015d8: the
+item numbers are in the test names), with the reports' payloads: the task-chat cache that remembers only channels
 that exist, the superuser composer, names and contents of files read through
 other models, a request without a user, reactions, the mail queue list, the
 Inbox counter, archived brief projects, x2many fetches, ratings, the readable

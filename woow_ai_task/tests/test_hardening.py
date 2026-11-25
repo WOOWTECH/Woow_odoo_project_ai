@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the PR #4 review (review-pr4/REVIEW.md, item numbers in
-the docstrings): the findings about woow_ai_task, fixed in the standalone
+"""Regression tests of the review of the earlier task AI module (item numbers
+in the docstrings): the findings about woow_ai_task, fixed in the standalone
 module; and of the independent review of this module (F numbers)."""
 
 import json

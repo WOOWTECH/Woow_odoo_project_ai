@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the fifth review of PR #1 (review-pai1-r5/REVIEW.md:
-the item numbers are in the test names), with the reports' payloads: no
+"""Regression tests of the fifth review (the item numbers are in the test
+names), with the reports' payloads: no
 rating in a task chat, mentions that reach members only, the rule driven by
 the user's own memberships, the content of task-chat messages and files read
 as superuser for a user (mail_group, the full composer, hr_expense's main

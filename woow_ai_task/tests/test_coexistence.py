@@ -26,7 +26,7 @@ from odoo.addons.woow_ai_task.tools import media
 
 from .common import BACKEND_POST, TEST_KEY, AiTaskFixtures, openai_ok
 
-try:  # woow_document_management (woow_prod): on the addons path of the coexistence database only
+try:  # woow_document_management: on the addons path of the coexistence database only
     from odoo.addons.woow_document_management.tests import test_reg_notification_label as document_labels
 except ImportError:
     document_labels = None
