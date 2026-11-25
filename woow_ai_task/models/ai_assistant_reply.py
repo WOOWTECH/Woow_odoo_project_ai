@@ -25,7 +25,8 @@ from odoo import models
 
 from ..tools import media
 from ..tools.markdown import markdown_to_html
-from .ai_assistant_backend import strip_think
+from .ai_assistant_backend import log_unexpected, strip_think
+from .discuss_channel import trusted
 
 _logger = logging.getLogger(__name__)
 
@@ -175,9 +176,10 @@ class WoowProjectAiAssistantReply(models.Model):
             except media.DownloadRefused as e:
                 _logger.info("Project AI assistant %s: file not attached (%s)", self.id, e)
                 return match.group(0)
-            except Exception:  # noqa: BLE001 - a file never costs the reply: it stays a link
-                _logger.warning("Project AI assistant %s: file not attached (unexpected error)", self.id,
-                                exc_info=True)
+            except Exception as e:  # noqa: BLE001 - a file never costs the reply: it stays a link
+                # (the type and the code lines: the text of an error of a download may carry the file's URL)
+                log_unexpected(_logger, "Project AI assistant %s: file not attached (unexpected error)", (self.id,),
+                               e, level=logging.WARNING)
                 return match.group(0)
             files.append(file)
             return file['name']
@@ -210,37 +212,40 @@ class WoowProjectAiAssistantReply(models.Model):
                     if isinstance(e, media.DownloadRefused):
                         _logger.info("Project AI assistant %s: attachment kept as a link (%s)", self.id, e)
                     else:
-                        _logger.warning("Project AI assistant %s: attachment kept as a link (unexpected error)",
-                                        self.id, exc_info=True)
+                        log_unexpected(_logger, "Project AI assistant %s: attachment kept as a link (unexpected "
+                                       "error)", (self.id,), e, level=logging.WARNING)
                     extra_links.append('[%s](%s)' % ((name or media.filename_from_url(url)).replace(']', ''), url))
         if extra_links:
             text = (text + '\n\n' + '\n'.join('- %s' % link for link in extra_links)).strip()
         link_hosts = channel._woow_project_ai_link_hosts(self) if channel else None
         try:
             html = markdown_to_html(text, link_hosts=link_hosts)
-        except Exception:  # noqa: BLE001 - the renderer never loses a reply: escaped plain text
-            _logger.warning("Project AI assistant %s: reply shown as plain text (Markdown rendering failed)",
-                            self.id, exc_info=True)
+        except Exception as e:  # noqa: BLE001 - the renderer never loses a reply: escaped plain text
+            log_unexpected(_logger, "Project AI assistant %s: reply shown as plain text (Markdown rendering "
+                           "failed)", (self.id,), e, level=logging.WARNING)
             html = Markup('<p>%s</p>') % text
             warnings.append('reply shown as plain text')
         return {'html': html, 'files': files, 'warnings': warnings}
 
     def _post_prepared(self, channel, prepared):
-        """Post a prepared reply in `channel` as the AI; returns the message (or empty)."""
+        """Post a prepared reply in `channel` as the AI; returns the message (or
+        empty). From a trusted context (the welcome text is posted in the
+        request of whoever opens the tab, a push in the push route's): no
+        client default_* key reaches the files or the message."""
         self.ensure_one()
-        assistant = self.sudo()
-        channel = channel.sudo()
+        assistant = trusted(self.sudo())
+        channel = trusted(channel.sudo())
         html = prepared.get('html') or Markup('')
         files = prepared.get('files') or []
         if not str(html).strip() and not files:
             return self.env['mail.message']
-        attachments = self.env['ir.attachment'].sudo().create([{
+        attachments = assistant.env['ir.attachment'].create([{
             'name': file['name'],
             'raw': file['raw'],
             'mimetype': file['mimetype'],
             'res_model': 'discuss.channel',
             'res_id': channel.id,
-        } for file in files]) if files else self.env['ir.attachment'].sudo()
+        } for file in files]) if files else assistant.env['ir.attachment']
         for attachment, file in zip(attachments, files):
             if attachment.mimetype != file['mimetype']:
                 # ir.attachment re-sniffs "application/octet-stream" from the

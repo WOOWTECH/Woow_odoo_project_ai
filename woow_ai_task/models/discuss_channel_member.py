@@ -19,6 +19,7 @@ class DiscussChannelMember(models.Model):
         # code adds the member (checked on the created members as stored).
         # (res.partner / mail.guest channel_ids, many2many on the member table,
         # insert no row: Odoo's NOT NULL new_message_separator refuses it.)
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         members = super().create(vals_list)
         if not is_sync(self.env) and not self._woow_project_ai_ordinary_channels(vals_list):
             members._woow_project_ai_check_stored_channels()

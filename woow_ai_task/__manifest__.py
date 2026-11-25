@@ -97,6 +97,7 @@ See README.md and docs/PROTOCOL.md in the repository.
             'woow_ai_task/static/src/portal/**/*',
         ],
     },
+    'post_init_hook': 'post_init_hook',
     'uninstall_hook': 'uninstall_hook',
     'installable': True,
     'auto_install': False,

@@ -6,7 +6,7 @@ the backend sends is treated as untrusted text: each piece of text is escaped
 first and only then wrapped in the few tags generated here; the result is
 passed through Odoo's ``html_sanitize`` as a second line of defence.
 
-Supported (enough for chat replies, see docs/DESIGN.md "回覆呈現"):
+Supported (enough for chat replies, see docs/PROTOCOL.md "Reply rendering"):
 
 - paragraphs, hard line breaks (a newline inside a paragraph is a ``<br/>``)
 - ``**bold**`` / ``__bold__``, ``*italic*`` / ``_italic_``, ``~~strike~~``
@@ -25,13 +25,13 @@ Supported (enough for chat replies, see docs/DESIGN.md "回覆呈現"):
 
 import re
 from contextvars import ContextVar
-from urllib.parse import urlsplit
 
 from markupsafe import Markup, escape
 
 from odoo.tools import html_sanitize
 
 from .media import host_allowed, parse_domains, url_host
+from .urls import split_url
 
 ALLOWED_SCHEMES = ('http://', 'https://', 'mailto:')
 MAX_INPUT_LENGTH = 100000  # characters; longer replies are cut (with a marker)
@@ -66,17 +66,15 @@ _LINK_HOSTS = ContextVar('woow_ai_task_link_hosts', default=None)
 
 
 def safe_url(url):
-    """Return the URL when its scheme is allowed (http, https, mailto), else None."""
+    """Return the URL when its scheme is allowed (http, https, mailto), else
+    None. An http(s) URL whose host is not certain is refused
+    (tools/urls.py: a backslash, userinfo, a host urlsplit and the browser or
+    requests read differently): the reply's link hosts would not be where the
+    link goes."""
     url = (url or '').strip()
     if not url.lower().startswith(ALLOWED_SCHEMES) or any(c in url for c in '\r\n\t'):
         return None
-    # A backslash is a path separator for browsers but not for urlsplit, and userinfo ("@") hides the real host:
-    # both make the host list (_LINK_HOSTS, download domains) disagree with where the browser goes
-    try:
-        netloc = urlsplit(url).netloc
-    except ValueError:
-        return None
-    if '\\' in url or '@' in netloc:
+    if url.lower().startswith(('http://', 'https://')) and split_url(url) is None:
         return None
     return url
 

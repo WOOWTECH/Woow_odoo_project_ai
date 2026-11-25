@@ -24,3 +24,5 @@ from . import test_coexistence
 from . import test_redesign_review
 from . import test_r5_review
 from . import test_alignment
+from . import test_r6_review
+from . import test_contract

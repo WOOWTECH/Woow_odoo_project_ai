@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 01:41+0000\n"
-"PO-Revision-Date: 2026-11-25 01:41+0000\n"
+"POT-Creation-Date: 2026-11-25 04:50+0000\n"
+"PO-Revision-Date: 2026-11-25 04:50+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -726,8 +726,13 @@ msgstr "AI 回覆中的檔案"
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__download_domains
 msgid ""
 "Files linked in AI replies are downloaded and attached only from these "
-"hosts. One per line: an exact host name or *.example.com."
-msgstr "AI 回覆中連結的檔案只有來自這些主機才會下載並附加。每行一個：完整主機名稱或 *.example.com。"
+"hosts, over https (plain http only from localhost and *.svc.cluster.local "
+"hosts listed here); a link with a user name or a backslash is never "
+"downloaded. One per line: an exact host name or *.example.com."
+msgstr ""
+"AI 回覆中連結的檔案只有來自這些主機才會下載並附加，而且要用 https（只有列在這裡的 localhost 與 "
+"*.svc.cluster.local 主機可以用 http）；含使用者名稱或反斜線的連結一律不下載。每行一個：完整主機名稱或 "
+"*.example.com。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__finished_at
@@ -2132,8 +2137,9 @@ msgstr "客戶讀得到客戶 AI 對話裡的一切：不能在這裡張貼內�
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid ""
 "The endpoint URL must use https (plain http is only allowed for localhost "
-"and *.svc.cluster.local)."
-msgstr "後端網址必須使用 https（只有 localhost 與 *.svc.cluster.local 可用 http）。"
+"and *.svc.cluster.local), without a user name or a backslash."
+msgstr ""
+"後端網址必須使用 https（只有 localhost 與 *.svc.cluster.local 可用 http），而且不能含使用者名稱或反斜線。"
 
 #. module: woow_ai_task
 #. odoo-python

@@ -30,6 +30,8 @@ from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 from odoo.tools.mimetypes import guess_mimetype
 
+from .urls import split_url
+
 _logger = logging.getLogger(__name__)
 
 SIGNED_URL_TTL = 3600  # seconds
@@ -129,10 +131,13 @@ def is_internal_host(host):
 
 
 def url_allowed(url, domains):
-    """https to an allowlisted host; plain http only to an allowlisted internal host."""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
+    """https to an allowlisted host; plain http only to an allowlisted internal
+    host (localhost, ``*.svc.cluster.local``). A URL whose host is not certain
+    (tools/urls.py: a backslash, userinfo, a host urlsplit and requests read
+    differently) is never fetched: requests would connect to another host than
+    the one checked here. Checked again at every redirect hop."""
+    parts = split_url(url)
+    if parts is None:
         return False
     if not host_allowed(parts.hostname, domains):
         return False

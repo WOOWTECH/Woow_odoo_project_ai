@@ -72,8 +72,10 @@ from psycopg2.extensions import ISOLATION_LEVEL_READ_COMMITTED
 from odoo import api, fields, models, SUPERUSER_ID
 from odoo.modules.registry import Registry
 from odoo.tools import config
+from odoo.tools.misc import clean_context
 
 from ..tools.dispatcher import BUSY, FAILED, Dispatcher
+from .ai_assistant_backend import N8N_MAX_TIMEOUT, log_unexpected
 from .project_project import TAB_CUSTOMER
 from .project_task import ALERT_FAILED, ALERT_HANDOFF
 
@@ -535,7 +537,9 @@ class WoowProjectAiJob(models.Model):
 
     @api.model
     def _create_for_message(self, channel, assistant, message):
-        job = self.sudo().create({
+        # never the client's default_* keys (default_state, default_started_at, default_run_count...: a post
+        # applies the client's context to the request): the row starts pending, never run
+        job = self.sudo().with_context(clean_context(self.env.context)).create({
             'channel_id': channel.id,
             'assistant_id': assistant.id,
             'message_id': message.id,
@@ -622,12 +626,14 @@ class WoowProjectAiJob(models.Model):
         forced = (self.env['ir.config_parameter'].sudo().get_param(RUNNER_PARAM) or 'auto').strip().lower()
         if forced not in ('cron', 'thread'):
             forced = 'auto'
-        # the longest timeout of the AI connections the active assistants use
+        # the longest time an answer may take on the AI connections the active assistants use (an n8n call is
+        # capped at N8N_MAX_TIMEOUT whatever its timeout says: _call_backend)
         cr.execute("""
-            SELECT max(n.timeout_seconds) FROM woow_project_ai_connection n
+            SELECT max(CASE WHEN n.backend_type = 'n8n' THEN LEAST(n.timeout_seconds, %s) ELSE n.timeout_seconds END)
+              FROM woow_project_ai_connection n
              WHERE n.active AND EXISTS (SELECT 1 FROM woow_project_ai_assistant a
                                          WHERE a.connection_id = n.id AND a.active)
-        """)
+        """, [N8N_MAX_TIMEOUT])
         max_timeout = (cr.fetchone() or [None])[0] or 300
         local = (config.get('max_cron_threads') or 0) > 0 and not config.get('stop_after_init') \
             and not getattr(odoo_module, 'current_test', False)
@@ -763,7 +769,8 @@ class WoowProjectAiJob(models.Model):
         except Exception as e:
             if not commit:
                 raise
-            _logger.exception("Project AI job %s failed unexpectedly; the cron will retry it", self.id)
+            # the type name and the code lines only: an exception's text may carry a key or an upstream answer
+            log_unexpected(_logger, "Project AI job %s failed unexpectedly; the cron will retry it", (self.id,), e)
             cr.rollback()
             self.env.invalidate_all()
             try:

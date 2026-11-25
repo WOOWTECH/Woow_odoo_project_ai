@@ -19,7 +19,10 @@ Connections, system administrators only). A connection has one backend:
 | `n8n` | full production webhook URL (a Chat Trigger: `<n8n>/webhook/<webhookId>/chat`) | an n8n workflow (Webhook node or Chat Trigger) |
 
 The endpoint must be `https://`; plain `http://` only for `localhost`,
-`127.0.0.1`, `::1` and hosts ending in `.svc.cluster.local`.
+`127.0.0.1`, `::1` and hosts ending in `.svc.cluster.local`. A URL whose host
+the module and requests could read differently (a backslash, a user name
+before the host, a host `urlsplit` and urllib3 parse apart) is refused, and
+changing the URL to or from such a URL drops the saved key.
 
 **Safe for Customers** (`customer_safe`): only connections with it answer the
 customer AI chats. LiteLLM connections always have it (chat-only). An n8n
@@ -54,19 +57,28 @@ of one task and one tab) and carries:
   - customer chat: `[客戶 <name>] ` for a portal user, `[負責同事 <name>] ` for an
     employee, `[其他 <name>] ` otherwise. Only the label's first word tells
     the kind of account; the system prompt says so.
-  Names are one cleaned line, here and in the identity block: NFKC, white
-  space collapsed, no other control or format character, runs of three or
-  more `<` or `>` as one, `[` `]` as `(` `)`, at most 80 characters, never an
-  email. Text is cut at 16,000 characters (`…[truncated]`).
+  Names are one cleaned line, here, in the identity block and for the
+  people of the task summary (assignees): the first 1,000 characters, NFKC,
+  white space collapsed, no other control or format character, runs of
+  three or more `<` or `>` as one, then the contract's rule (`[` `]` as
+  `(` `)`, at most 80 characters). A name with an `@` (a partner named
+  after an e-mail address) counts as no name (contract v1.2): the customer
+  chat's label is then the kind alone (`[客戶] `), the internal chat has no
+  label, the identity block has no name line, and n8n's `user.name` is
+  `""`. The e-mail field itself goes to n8n only (`user.email`), and a
+  sender's address is never used as a name (for a message without author,
+  only the display name part of its sender, and nothing when that part is
+  an address). Text is cut at 16,000 characters (`…[truncated]`).
 - **system prompt**: the assistant's prompt, the project text of this tab
   (`專案說明（專案經理提供）：` + text; the customer chat never gets the internal
   one), a task summary read with the asker's own access rights (internal
   chat: name, description as text, stage, deadline, assignees, tags,
   priority, parent and subtask names; customer chat: those of them in Odoo's
   portal-readable field set, without the related tasks; never the chatter;
-  at most 8,000 characters), and in the customer chat the notes about the
-  labels. LiteLLM gets it as the `system` message (then the identity block);
-  n8n as `system_prompt`.
+  every value but the description on one line, people's names by the rule
+  above; at most 8,000 characters), and in the customer chat the notes
+  about the labels. LiteLLM gets it as the `system` message (then the
+  identity block); n8n as `system_prompt`.
 - **session id**: `woow-project-ai-<first 8 hex of the database uuid>-<channel id>`.
 - **surface**: `{"type": "project_task", "project_id": 7, "task_id": 42, "tab": "internal" | "customer"}`
   (n8n `surface`; LiteLLM `metadata.surface_*` string keys). `project_id`
@@ -83,9 +95,12 @@ of one task and one tab) and carries:
  "lang": "zh_TW", "tz": "Asia/Taipei", "is_portal": true, "company_id": 1}
 ```
 
-  n8n gets it as `user` (the only place the email goes). LiteLLM's model sees
-  an identity block in the system message without the email; `metadata`
-  repeats the identity (`odoo_*`) without the email too.
+  n8n gets it as `user` (the only place the email goes; `name` as stored,
+  `""` when it has an `@`). LiteLLM's model sees an identity block in the
+  system message without the email: the kind of account first
+  (`- account: …`), then the ids, the language and the time zone, the
+  cleaned name last; `metadata` repeats the identity (`odoo_*`) without the
+  email too.
 - **attachments** as `ATT` objects with a signed download link valid one hour:
 
 ```json
@@ -108,7 +123,8 @@ further comment; customer messages written meanwhile are not answered later.
 ### Timeouts and retries
 
 - *Timeout* is the total time for one answer, retries included (5–3600 s,
-  default 300 s; a new n8n connection gets 120 s). Connect timeout 10 s.
+  default 300 s; a new n8n connection gets 120 s): a retry's read timeout is
+  what is left of it (at least 1 s). Connect timeout 10 s.
   LiteLLM with *Stream Replies* (default): fails when no byte arrives for
   30 s, or when the whole answer takes longer than the timeout. n8n: an
   answer waits at most 300 s; a long workflow uses an in-cluster URL, or
@@ -119,9 +135,11 @@ further comment; customer messages written meanwhile are not answered later.
   working on it. Redirects are never followed (a 3xx is an error).
 - A failure posts the assistant's error message and is kept in the call log
   (status, HTTP code, duration, a fixed text or the exception's type name;
-  never the upstream body nor an exception's text). So does a question
-  that waited more than 30 minutes for its turn. In the customer chat both
-  also schedule the colleagues' To-Do (an open one is reused).
+  never the upstream body nor an exception's text; the server log carries an
+  unexpected exception's type name and code frames, never its text). So
+  does a question that waited more than 30 minutes for its turn. In the
+  customer chat both also schedule the colleagues' To-Do (an open one is
+  reused).
 - A file of a reply that cannot be read (network, TLS, a body cut short, a
   bad encoding, a malformed redirect, the deadline) stays a link: it never
   costs the answer or its call log.
@@ -211,8 +229,12 @@ X-Woow-Signature: sha256=5d2b…
 ```
 
 - `message` is the question being answered, `history` the earlier context.
-  `events` is always present (the contract's key) and empty: task chats have
-  no events.
+  Both carry the system's speaker label on a person's turn (`message.text`
+  and `chatInput`, equal to it, too): several people share a task chat, and
+  in the customer chat the label (set by the system, the kind of account
+  first) is what keeps a customer from writing a line that looks like a
+  colleague's. `events` is always present (the contract's key) and empty:
+  task chats have no events.
   `action` / `sessionId` / `chatInput` are what an n8n Chat Trigger reads.
 - Verify the signature on the **raw body**: `sha256=` + hex
   HMAC-SHA256(secret, `"<X-Woow-Timestamp>.<raw body>"`); reject timestamps
@@ -243,11 +265,14 @@ X-Woow-Signature: sha256=5d2b…
 
 Markdown (paragraphs, bold / italic / strike, code, headings, lists, quotes,
 GFM tables) rendered to safe HTML; HTML in the reply is shown as text; only
-`http`, `https` and `mailto` links, and none with a backslash or a user name
-(`user@`) before its host (those stay text). Images and file links whose host is in
-the connection's *Download Domains* are downloaded (https; size limit *Max
-File Size*, default 20 MB; no redirect outside the list) and attached; other
-links stay links. `data:image/…;base64` URIs in the text are attached without
+`http`, `https` and `mailto` links, and none whose host the module and the
+browser or the HTTP client could read differently: a backslash, a user name
+(`user@`) before its host, a host `urlsplit` and urllib3 parse apart (those
+stay text). Images and file links whose host is in the connection's
+*Download Domains* are downloaded (over https; plain http only from a listed
+`localhost` or `*.svc.cluster.local` host; size limit *Max File Size*,
+default 20 MB; no redirect outside the list, every hop checked the same way;
+never a URL refused above) and attached; other links stay links. `data:image/…;base64` URIs in the text are attached without
 the list. n8n `data_base64` attachments are decoded with the same limit. The
 type is detected from the content; HTML, SVG, XML and scripts are stored as
 `application/octet-stream`. At most 10 files per reply; the files of one

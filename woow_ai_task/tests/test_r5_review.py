@@ -8,7 +8,6 @@ attachment, the document filing rules: those run in the coexistence database
 and are skipped elsewhere), direct writes of pins and stars, and message
 names in one query."""
 
-import base64
 import json
 from unittest.mock import patch
 

@@ -7,12 +7,12 @@ instructions as one cleaned line, the exception's type name only in stored
 errors, and links whose host part holds a backslash or a user name."""
 
 import json
+import logging
 import re
 from unittest.mock import patch
 
 from odoo.tests import Form
 from odoo.tests.common import tagged
-from odoo.tools import mute_logger
 
 from odoo.addons.woow_ai_task.models.discuss_channel import one_line_name
 from odoo.addons.woow_ai_task.tools.markdown import markdown_to_html
@@ -110,12 +110,19 @@ class TestAlignment(ProjectAiCase):
         chat = self.chat(self.internal)
         self.post(chat, self.internal, 'hi')
         job = self.jobs(chat)[-1]
-        with mute_logger('odoo.addons.woow_ai_task.models.ai_assistant_backend'), \
-                patch(BACKEND_POST, side_effect=ValueError('detail https://llm.example.com/v1?token=abc')):
+        text = 'xyzdetail %s https://llm.example.com/v1?token=abc {"upstream": "body"}' % TEST_KEY
+        # every log record (no muted logger): the type name and the code lines, never the exception's text
+        with self.assertLogs(level='DEBUG') as logs, patch(BACKEND_POST, side_effect=ValueError(text)):
             run(job)
+        formatter = logging.Formatter('%(levelname)s %(name)s: %(message)s')
+        # (Odoo's own SQL query log excepted, as the contract's check)
+        logged = '\n'.join(formatter.format(record) for record in logs.records if record.name != 'odoo.sql_db')
+        self.assertIn('ValueError', logged)
+        for part in (TEST_KEY, 'token=abc', '"upstream"', 'xyzdetail'):
+            self.assertNotIn(part, logged)
         log = self.env['woow.project.ai.call.log'].search([('job_id', '=', job.id)])
         self.assertEqual(log.error, 'ValueError')
-        self.assertNotIn('detail', job.error or '')
+        self.assertNotIn('xyzdetail', job.error or '')
 
     def test_n8n_events_key(self):
         chat = self.chat(self.portal, self.n8n)

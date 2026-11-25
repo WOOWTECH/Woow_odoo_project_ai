@@ -6,11 +6,15 @@
              listed until the next membership sync, but reads nothing any more. Global: everybody, administrators
              included. Every other channel: unchanged, for every user (woow_project_ai_task_id is empty, the
              domain is true there: models/discuss_channel.py _search_woow_project_ai_readable, the user's readable task
-             chats computed once per transaction). -->
+             chats computed once per transaction).
+             The domain applies only where this module's code is loaded (its res.users field is in the registry):
+             while modules that load before it run (their at_install tests, a migration script that acts as a
+             user), and in an image that lacks its code, Odoo would otherwise raise on the unknown field for every
+             non-superuser channel access; the task chats then keep Odoo's own group-chat rule (members only). -->
         <record id="rule_discuss_channel_woow_project_ai" model="ir.rule">
             <field name="name">Project AI task chat: only people who can read the task</field>
             <field name="model_id" ref="mail.model_discuss_channel"/>
-            <field name="domain_force">[('woow_project_ai_readable', '=', True)]</field>
+            <field name="domain_force">[('woow_project_ai_readable', '=', True)] if 'woow_project_ai_readable_rule' in user else []</field>
             <field name="perm_read" eval="True"/>
             <field name="perm_write" eval="True"/>
             <field name="perm_create" eval="False"/>

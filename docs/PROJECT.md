@@ -8,7 +8,7 @@
 
 **系統管理員**（專案 › 配置 › 專案 AI）：
 
-- **AI 連線**：類型只有兩種：**LiteLLM**（OpenAI 相容的 chat completions；Odoo 從不送工具，只對話）和 **n8n webhook**。網址、只寫不讀的金鑰（LiteLLM：Bearer 虛擬金鑰，限額在 LiteLLM 設；n8n：選填的簽章金鑰）、模型、逾時、重試、串流、文件處理方式、回覆檔案的網域白名單、內容紀錄、上線前檢查、「測試連線」。
+- **AI 連線**：類型只有兩種：**LiteLLM**（OpenAI 相容的 chat completions；Odoo 從不送工具，只對話）和 **n8n webhook**。網址、只寫不讀的金鑰（LiteLLM：Bearer 虛擬金鑰，限額在 LiteLLM 設；n8n：選填的簽章金鑰）、模型（LiteLLM 必填：LiteLLM 靠模型名稱選部署，沒填就是「未就緒」）、逾時、重試、串流、文件處理方式、回覆檔案的網域白名單、內容紀錄、上線檢查、「測試連線」。
   - **可給客戶使用**：LiteLLM 一律可以（只對話）；n8n 要系統管理員確認流程不查公司資料、不呼叫工具、不跨對話記憶後才勾。改了網址或類型就自動取消，要重新確認。
 - **AI 助理**：名稱、頭像、機器人聯絡人（一直保持封存：不會出現在「開始對話」和 @ 建議，但照樣能在任務對話發言、被讀到）、系統提示詞、錯誤訊息、歷史訊息數、推送金鑰；選一條 AI 連線。說明會顯示在專案「AI 助理」頁每個選項的下方（也在「搜尋更多」清單裡），讓專案經理知道該選哪一個。
 - 另有「回覆工作」「呼叫紀錄」「AI 用量」。
@@ -57,7 +57,8 @@
 - **發言當下檢查**：在任務對話發言（或修改訊息）的人，必須是現在讀得到任務的成員；修改或清空訊息只限訊息的作者（Odoo 也讓管理員修改任何人的訊息，那會把客戶或 AI 的話和檔案拿掉）；不是的話丟 AccessError，並在**另一個交易**立刻把他移除（等鎖最多 3 秒，失敗就留給下次同步）。發文、上傳等 mail 路由先查頻道（`_get_thread_with_access`），失去權限的成員在那裡就被拒絕並移除。人和 AI 只寫一般留言：不收 email、不收人自己發的通知。封存的任務一律拒絕（修改、刪除訊息、釘選、表情回應、改名也一樣）。有人發言、AI 回覆或推送時，都先把已經失去權限的成員移除，訊息才送出。客戶對話不收記事（log note）：客戶讀得到客戶對話裡的一切，所以記事或 `is_internal` 的訊息一律拒絕；沒有指定類型的張貼一律當成一般訊息（Odoo 預設是記事）。客戶 AI 的歷史也只取客戶讀得到的訊息。
 - **不能用別人的名義**：JSON-RPC 的 `message_post` 只能用自己的 `author_id`；任務對話的 `mail.message` 只能用發言建立（直接建立一律拒絕，自己的名字也一樣），非 superuser 也不能直接修改（釘選、加星號也一樣：Odoo 自己的釘選用 SQL、加星號寫在聯絡人那邊、修改訊息以 superuser 處理）、刪除；發言和編輯時 @ 到的人只留對話的成員。任務對話的發言不收評分（Odoo 的公開評分路由 `/rate/<token>/submit_feedback` 會以 superuser、用評分的聯絡人當作者發一則）。AI 助理以 superuser 張貼，只有這種張貼才當成機器人。
 - **讀取只有一個檢查點**：Odoo 18 讀訊息時用 sudo（`mail.message.fetch`），只有 `read` 會檢查權限；複製、經由任何模型的匯出（`mail.notification`、加星號的訊息、頻道成員）、onchange 的來源記錄與計算、委派欄位（`mail.mail`）、範本渲染的 `object.body` 都用 sudo 讀；其他模型的 related 欄位與儲存的計算欄位也以 superuser 讀（mail_group 的 `body`／`subject`／`author_id`／`email_from`／`attachment_ids`、完整編輯器由上層訊息算出的欄位、im_livechat 的 `parent_body`），onchange 裡也一樣。這些讀取最後都到同一個地方：從資料庫讀出欄位（`_fetch_query`）。本模組在那裡檢查，而且只要環境是替一位真實使用者在做（`env.uid` 不是 superuser 帳號、也不是沒有使用者的請求），superuser 也一樣：一批裡有任務對話的訊息時，確認這位使用者依本模組規則讀得到那些對話（現在讀得到任務；內部對話還有專案和用過說明的專案），讀不到就清掉它們剛讀到的欄位、丟 AccessError（ORM 的預先讀取會退回只讀被要求的那一筆）。Odoo 的 record rule 和存取檢查以 superuser 讀的欄位（`model`、`res_id`、`message_type`、`subtype_id`、`is_internal`、`parent_id`、建立／修改的人和時間、`date`）不擋：先讀到這些欄位時（例如 `filtered_domain`），一起預先讀到的內容欄位會被清掉，不留在快取、也不讓規則檢查失敗。哪些訊息屬於任務對話用快取裡的 `model`／`res_id` 和每個程序記著的任務對話 id 判斷（只記住已經存在的頻道：查一個還沒有資料列的 id 不會把未來的任務對話記成一般頻道），沒有任務對話時不多任何查詢。（`message_post` 回傳的訊息記錄帶著發言時的 context，所以發言的標記不算讀取理由。）完整編輯器另外檢查上層訊息（`model`／`res_ids` 是規則欄位）：讀不到上層訊息的人不能用它開編輯器。Odoo 給作者看的寄送失敗（`/mail/data` 的 failures、bus）略過作者現在讀不到的任務對話訊息。Odoo 對訊息的讀取權限檢查（`_check_access`：`read`、`has_access`、`_get_with_access`）也套用本模組規則：有任何訊息的 record rule 時（例如 woow_document_management 加的），Odoo 會以 superuser 的 `filtered_domain` 檢查，之後的讀取可能直接用快取。`_search`（非 superuser）也略過讀不到的任務對話訊息：Odoo 讓作者和被通知的人搜尋得到它們（收件匣、星號、歷史、read_group）。條件只鎖在其他模型時不加任何東西；鎖在特定頻道時先看快取；其他情況每則訊息看它自己的頻道（用主鍵查 `discuss_channel`，不建所有任務對話的集合），是任務對話時才看使用者讀得到的清單。
-- **使用者讀得到哪些任務對話**（`res.users.woow_project_ai_readable_rule`，欄位快取，每個交易算一次；加入、離開、群組、追蹤者、專案、協作者、使用者變動或建立任務對話後重新計算）：每個人先是他們自己所在、而且讀得到的任務對話 id 清單（Odoo 只讓成員讀群組對話，任務對話是群組對話）：一個有索引的成員查詢，有任務對話時再一個查詢，之後頻道的全域規則、訊息的搜尋條件、`mail.mail` 的條件都用這個清單，沒有東西要規劃。不在任何任務對話的人，規則只是 `woow_project_ai_task_id = False`。系統管理員（Odoo 讓他們讀所有頻道）在清單之後還有一個編譯好的子查詢（所有他們讀得到的任務對話），資料每次使用時才讀，PostgreSQL 依序計算 OR 的各項，所以只在碰到不在清單裡的任務對話時才算這個子查詢，每個語句最多一次；用過內部說明的專案那個條件不和外層關聯（`id NOT IN (SELECT channel_id FROM woow_project_ai_channel_brief_project_rel WHERE project_id NOT IN (讀得到的專案))`），只算一次，它的關聯表也在要先寫入資料庫的欄位裡。任務規則只套用一次：內部對話另外要求任務的專案讀得到時，不把任務規則的子查詢再包一層（那樣 PostgreSQL 可能規劃成對所有任務的巢狀迴圈：沙盒 10,000 個任務對話時，系統管理員的 /mail/data 要 0.5 秒）。
+- **以 superuser 替讀不到對話的人做事的流程**（第六輪的全面檢查，每個都有測試，見 NOTES.md）：portal 通知中心不列出客戶讀不到的任務對話訊息的通知（條件在搜尋裡，清單、頁數、未讀數、開啟和標已讀的路由、/my 卡片都一致；橋接模組 `woow_ai_task_portal_notification`）；寄信佇列送給作者的寄送狀態通知只送給現在讀得到對話的人；digest 的訊息數在使用者自己的環境計算（搜尋條件已略過）；刪除任務（連同 Odoo 一起刪的進行中子任務）或專案時，本模組自己的連鎖刪除帶一個物件標記（`DELETING`，JSON-RPC 的 context 偽造不出來），Odoo 讀要刪的訊息和檔案時不檢查刪除的人；刪除使用者、聯絡人、合併聯絡人、封存任務或專案都不讀對話內容；portal 的任務留言與評分是任務自己的；用 id 直接讀檔案或訊息（`/web/content`）一律拒絕；大量寄信不會寄到頻道。
+- **使用者讀得到哪些任務對話**（`res.users.woow_project_ai_readable_rule`，欄位快取，每個交易算一次；加入、離開、群組、追蹤者、專案、協作者、使用者變動或建立任務對話後重新計算）：每個人先是他們自己所在、而且讀得到的任務對話 id 清單（Odoo 只讓成員讀群組對話，任務對話是群組對話）：一個有索引的成員查詢，有任務對話時再一個查詢，之後頻道的全域規則、訊息的搜尋條件、`mail.mail` 的條件都用這個清單，沒有東西要規劃（直接讀欄位快取裡的值，不複製）。不在任何任務對話的人，規則只是 `woow_project_ai_task_id = False`。系統管理員（Odoo 讓他們讀所有頻道）在頻道的全域規則和 `mail.mail` 的條件裡，清單之後還有一個編譯好的子查詢（所有他們讀得到的任務對話），資料每次使用時才讀，PostgreSQL 依序計算 OR 的各項，所以只在碰到不在清單裡的任務對話時才算這個子查詢，每個語句最多一次；訊息清單（收件匣、歷史、星號、設定 > 訊息）不放這個子查詢（它的成本會讓 PostgreSQL 改成掃整個訊息表），系統管理員在那裡看到他們是成員的任務對話，其他讀得到的對話從任務打開；檢查某幾個對話時（打開一個不是成員的對話），只為那幾個對話編譯一次（成本不隨資料庫的任務對話數增加）；用過內部說明的專案那個條件不和外層關聯（`id NOT IN (SELECT channel_id FROM woow_project_ai_channel_brief_project_rel WHERE project_id NOT IN (讀得到的專案))`），只算一次，它的關聯表也在要先寫入資料庫的欄位裡。任務規則只套用一次：內部對話另外要求任務的專案讀得到時，不把任務規則的子查詢再包一層（那樣 PostgreSQL 可能規劃成對所有任務的巢狀迴圈：沙盒 10,000 個任務對話時，系統管理員的 /mail/data 要 0.5 秒）。
 - 讀不到的人看到任務對話訊息的名稱（記錄連到它時 Odoo 用 sudo 顯示，例如每個員工都讀得到的 `mail.notification`）是「任務 AI 對話」，不是含任務名稱的對話名稱；其他訊息的名稱交給 Odoo 和其他模組（例如 woow_document_management 的「Restricted folder」），名稱、模型、res_id 用同一個查詢讀出、放進快取，每批一個查詢（和 Odoo 一樣）。失去對話的人（成員與否）未讀的提及通知，同步與每小時排程會標成已讀並更新收件匣計數。設定 > 技術 > 郵件（系統管理員）不列出讀不到的任務對話訊息的郵件：每封郵件看它的訊息的欄位（不建訊息的集合）。
 - **檔案內容與名稱**：使用者自己的環境裡，Odoo 的 `ir.attachment` 檢查本來就有效；其他模型以 superuser 讀連結檔案時（snailmail 信件的 `attachment_datas`／`attachment_fname`，橋接模組改成依真實使用者計算；hr_expense 的 `message_main_attachment_checksum`；任何連到檔案的 many2one 標籤，Odoo 以 sudo 組出，onchange 裡也一樣），讀不到對話的真實使用者（`env.uid`）拿到的 `datas` 是空的（沒有使用者的請求 `auth='none'` 也算讀不到）、顯示名稱是「任務 AI 對話檔案」（都先用 SQL 判斷，不讀檔案的名稱和內容），其他從資料庫讀出的欄位（名稱、checksum、大小、類型、token、儲存位置……）一律拒絕；檔案屬於哪裡（`res_model`／`res_id`／`res_field`）、`public`、`type`、公司、建立／修改的人和時間照樣讀得到（superuser 和系統管理員除外：排程、本模組的工作、`force_storage`）。
 - **連結一律檢查存進資料庫的結果**（SQL，不看輸入值或快取：Odoo 把字串或浮點數的 many2one id 直接寫進 INSERT，快取卻是空的；x2many 的指令也一樣），不管 id 型別和指令形式：
@@ -85,7 +86,7 @@
 ## 封存與刪除
 
 - 任務封存：AI 不回答，分頁只能閱讀（不能發言、編輯、刪除、釘選、表情回應、改名）；portal 使用者讀不到封存的任務，同步時移除。取消封存後照常。在表單上封存或取消封存，開著的分頁馬上跟著變。
-- 任務刪除：刪除它的 AI 對話（訊息、檔案一起）。
+- 任務刪除：刪除它的 AI 對話（訊息、檔案一起），連同 Odoo 一起刪的子任務（進行中的；封存的子任務留著，它的對話也留著）的對話；專案刪除也一樣。不管刪除的人讀不讀得到這些對話。
 - 沒有專案的任務（變成私人任務）：AI 不回答，同事發言時用預設暫停分鐘數，不會出錯。
 
 ## 回覆
@@ -97,6 +98,7 @@
 - **助理不能回答時**（助理封存、連線未就緒；客戶對話另外：連線**此刻**不可給客戶使用、專案沒分享給 portal）：不呼叫後端，每段未就緒期間張貼一則固定通知（客戶：「AI 暫時無法回覆，負責同事會再跟您聯絡。」），專案表單顯示原因。**客戶對話裡每一則這樣的客戶訊息都替負責的同事排待辦事項**（和轉真人共用：未完成的會沿用，完成後下一則再排新的），因為同事在客戶對話是靜音的。
 - **回覆失敗時**（後端錯誤、試了三次、問題等超過 30 分鐘才輪到）：提問的人收到助理的錯誤訊息；客戶對話另外排同一個待辦事項。
 - 提問的人在回答前失去權限：不回答。
+- **用戶端的 context 不算數**：Odoo 的發文路由會把用戶端送來的 `context` 套用到整個請求；任務對話的發文會先拿掉其中的 `default_*`，模組在用戶端請求裡建立的資料（回覆工作、待辦事項、AI 的發文和檔案、呼叫紀錄）只沿用語言和時區。偽造的 `default_state`／`default_started_at`／`default_run_count` 不會讓工作變成「執行中」或「已用完重試」，`mail_activity_automation_skip`、`default_user_id`、`default_attachment_ids` 也不會取消、改派或替待辦事項掛檔案。
 
 ## AI 收到什麼
 
@@ -104,7 +106,7 @@
 - **任務資料用提問者本人的權限讀**（`with_user(提問者)`，不用 sudo）。提問者是被回答那則訊息的作者，而且必須是這個分頁的對象（客戶對話：portal 使用者，絕不用同事的權限）：
   - 內部對話：名稱、說明（純文字）、階段、截止日期、受指派人、標籤、優先級別、上級任務、子任務名稱。關聯的記錄（上級任務、子任務、標籤、人…）只放**對話裡每個成員都讀得到**的：AI 的回答所有成員都看得到。
   - 客戶對話：上面這些裡，Odoo 18 portal 可讀欄位（`SELF_READABLE_FIELDS`）有的才放，而且**不放上級任務和子任務**：同一個客戶對話裡的客戶可能看得到不同的子任務，AI 的回答所有成員都看得到。
-  - 兩者都不放任務的留言和內部記錄，最多 8,000 字。
+  - 兩者都不放任務的留言和內部記錄，最多 8,000 字。除了說明，每個值都只占一行；受指派人的名字跟身分區塊、歷史標籤用同一套規則（一行、`[` `]` 換成 `(` `)`、最多 80 字），名字不能自成一行或冒充標籤。
 - **使用位置**：`{"type": "project_task", "project_id": …, "task_id": …, "tab": "internal" | "customer"}`；`project_id` 只在對話裡每個人（包括提問者）都讀得到專案時才有，不然是 null：回答給對話裡每個人看，客戶也可能讀得到任務、卻讀不到它的專案。
 - **檔案**：依 AI 連線的「使用者傳送的文件」（`file` 直接附檔、`link` 簽章連結）；兩個分頁都能上傳。
 
@@ -122,11 +124,12 @@
 
 ## 安裝、解除安裝、回復
 
-- 安裝：只相依 Odoo 原生模組；和 `woow_ai_contact`、`woow_ai_contact_portal_discuss`、`im_livechat_ai` 一起裝也可以（沙盒實測）。
+- 安裝：只相依 Odoo 原生模組；和 `woow_ai_contact`、`woow_ai_contact_portal_discuss`、`im_livechat_ai` 一起裝也可以（沙盒實測）。安裝時跑 `ANALYZE discuss_channel`，新的任務連結欄位馬上有統計資料。任務對話超過約 1 萬個時，系統管理員的 Discuss 查詢估計成本會超過 PostgreSQL 的 `jit_above_cost`（約 10,600 個起），每個查詢多約 60 毫秒的 JIT 編譯：由資料庫擁有者對那個資料庫下 `ALTER DATABASE <db> SET jit = off;`（量測與做法見 README「大型資料庫」；模組不改這個設定）。
+- 文件橋接模組延伸 woow_document_management 的兩個內部方法（`_woow_auto_file_checked(attachments, unfiled)`、`_woow_backfill_domain()`）；任何一個不見了或參數變了就拒絕載入，發版工具可以檢查。
 - **裝了以後，每個服務這個資料庫的映像都必須帶著 `woow_ai_task`**：它的全域 `discuss.channel` record rule 讀的是本模組的計算欄位，它的畫面和排程也需要它的程式。映像少了這個模組、資料庫卻還裝著時，每個非 superuser 的頻道讀取都會失敗（Discuss、Live Chat、portal 對話全站壞掉）。
 - **五個模組一起進映像**（回復用的映像也是）：`addons-sources.py sync --modules woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail,woow_ai_task_document_management`，`paas-addons.list`、`cloud-addons.list` 也寫這五個。Odoo 只在橋接模組的某個相依模組「正在安裝」時才自動裝它；`-u`、`-u all`、更新應用程式清單、對已安裝模組再 `-i` 都不會。橋接模組比兩邊都晚到資料庫時要明確安裝：裝了 woow_odoo_portal_discuss 的 `-i woow_ai_task_portal_discuss`，裝了 woow_portal_notification_discuss 的 `-i woow_ai_task_portal_notification`，裝了 snailmail 的 `-i woow_ai_task_snailmail`，裝了 woow_document_management 的 `-i woow_ai_task_document_management`（另一邊沒裝的資料庫不要裝，會連另一邊一起裝上）。之後若再加新的橋接模組，`woow_ai_task` 要在升級時（post-migrate）替已經有兩邊的資料庫安裝它。
 - **模組操作和排程**：從「應用程式」或 `odoo shell` 的安裝、升級、解除安裝（`button_immediate_*`）在有排程正在執行時會被 Odoo 拒絕，而 AI 派送排程（本模組和 `woow_ai_contact` 的）和成員同步掃描每一輪都佔著自己的排程。請在空檔操作，或先把 `woow_ai_task.job_runner`（和 `woow_ai_contact.job_runner`）設成 `thread` 等這一輪結束，或停掉排程程序（`max_cron_threads=0`）再試；命令列的 `odoo -i`／`-u` 不受影響。
-- **要拿掉**：在帶著這個模組的映像上解除安裝。解除安裝會先關掉那條全域規則，把任務對話裡的人都移出（機器人留下）、對話封存、歷史保留（只有系統管理員讀得到），再由 Odoo 刪掉本模組的資料（規則先刪，欄位和資料表後刪）。四個橋接模組會一起解除安裝：它們只有程式和一張 portal 卡片，沒有東西要還原。
+- **要拿掉**：在帶著這個模組的映像上解除安裝。解除安裝會先關掉那條全域規則，把任務對話裡的人都移出（機器人留下；兩個 SQL 指令一次做完、他們在這些對話的未讀通知標成已讀，不逐一發通知：1 萬個任務對話、30,030 人時 3.5 秒，逐一移出要 371 秒）、對話封存、歷史保留（只有系統管理員讀得到），再由 Odoo 刪掉本模組的資料（規則先刪，欄位和資料表後刪：AI 連線和金鑰、AI 助理、回覆工作、呼叫紀錄、每月用量都會消失）。四個橋接模組會一起解除安裝：它們只有程式和一張 portal 卡片，沒有東西要還原。
 - 只有必須留著、又相依它的模組（例如日後相依它的 PaaS 平台）才會擋住單獨解除安裝：那時只能往前修，或還原資料庫和檔案庫快照。
 - `odoo-bin neutralize`：AI 連線清空網址和金鑰並封存，n8n 的「可給客戶使用」取消，推送金鑰撤銷；每個資料表都先用 `to_regclass` 檢查。
 

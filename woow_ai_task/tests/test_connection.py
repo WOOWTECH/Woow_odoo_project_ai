@@ -93,7 +93,7 @@ class TestAiConnection(ProjectAiCase):
                           connection.openai_stream, connection.document_mode, connection.max_download_mb,
                           connection.log_payload, connection.customer_safe),
                          ('openai', 300, 1, True, 'file', 20, False, True))
-        # two backend types only, no Hermes fields
+        # two backend types only: none of the third backend type's fields of the module this was ported from
         self.assertEqual([key for key, _label in
                           self.env['woow.project.ai.connection']._fields['backend_type'].selection],
                          ['openai', 'n8n'])

@@ -20,19 +20,18 @@ of a project may use the connection: always for LiteLLM (chat-only); for n8n
 only once a system administrator ticked it, cleared again when the workflow
 URL or the backend type changes.
 
-Ported from woow_ai_contact 18.0.2.0.0 (``woow.ai.connection``), without the
-Hermes fields and checks. Nothing is shared with that module.
+Ported from woow_ai_contact 18.0.2.0.0 (``woow.ai.connection``), with its two
+backend types only (n8n and LiteLLM). Nothing is shared with that module.
 """
 
 import logging
-from urllib.parse import urlsplit
-
 import requests
 
 from odoo import api, fields, models
 from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..tools import media
+from ..tools.urls import split_url
 from .ai_assistant_backend import CONNECT_TIMEOUT, TEST_TIMEOUT, _json_dumps, _signature_headers
 
 _logger = logging.getLogger(__name__)
@@ -53,24 +52,25 @@ READINESS_BLOCKED = 'blocked'
 
 
 def endpoint_origin(url):
-    """(scheme, host, port) of an endpoint URL, None when empty; the server a key is sent to."""
+    """(scheme, host, port) of an endpoint URL, None when empty; the server a
+    key is sent to. A URL whose host is not certain (tools/urls.py) is its own
+    origin: changing to or from it drops the saved key."""
     url = (url or '').strip()
     if not url:
         return None
-    try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
+    parts = split_url(url)
+    if parts is None:
         return ('?', url)
     scheme = (parts.scheme or '').lower()
-    return (scheme, (parts.hostname or '').lower(), port or {'https': 443, 'http': 80}.get(scheme))
+    return (scheme, (parts.hostname or '').lower(), parts.port or {'https': 443, 'http': 80}.get(scheme))
 
 
 def endpoint_url_allowed(url):
-    """https, or http to localhost / an in-cluster *.svc.cluster.local host."""
-    try:
-        parts = urlsplit((url or '').strip())
-    except ValueError:
+    """https, or http to localhost / an in-cluster *.svc.cluster.local host;
+    never a URL whose host is not certain (tools/urls.py: a backslash,
+    userinfo, a host urlsplit and requests read differently)."""
+    parts = split_url((url or '').strip())
+    if parts is None:
         return False
     host = (parts.hostname or '').lower()
     if not host:
@@ -142,8 +142,9 @@ class WoowProjectAiConnection(models.Model):
              'inline. Size limits: docs/PROTOCOL.md.')
     download_domains = fields.Text(
         string='Download Domains',
-        help='Files linked in AI replies are downloaded and attached only from these hosts. '
-             'One per line: an exact host name or *.example.com.',
+        help='Files linked in AI replies are downloaded and attached only from these hosts, over https '
+             '(plain http only from localhost and *.svc.cluster.local hosts listed here); a link with a user '
+             'name or a backslash is never downloaded. One per line: an exact host name or *.example.com.',
     )
     max_download_mb = fields.Integer(string='Max File Size (MB)', default=DEFAULT_MAX_DOWNLOAD_MB)
     log_payload = fields.Boolean(
@@ -268,7 +269,7 @@ class WoowProjectAiConnection(models.Model):
             if url and not endpoint_url_allowed(url):
                 raise ValidationError(self.env._(
                     'The endpoint URL must use https (plain http is only allowed for localhost '
-                    'and *.svc.cluster.local).'))
+                    'and *.svc.cluster.local), without a user name or a backslash.'))
 
     @api.constrains('timeout_seconds', 'max_download_mb', 'max_retries')
     def _check_limits(self):
@@ -337,6 +338,7 @@ class WoowProjectAiConnection(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         for vals in vals_list:
             if vals.get('backend_type', BACKEND_LITELLM) == BACKEND_LITELLM:
                 vals['customer_safe'] = True

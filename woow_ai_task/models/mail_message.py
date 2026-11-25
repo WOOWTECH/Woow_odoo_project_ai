@@ -44,14 +44,16 @@ the registry cache)."""
 
 import logging
 
-from odoo import SUPERUSER_ID, api, fields, models
+from odoo import SUPERUSER_ID, Command, api, fields, models
 from odoo.exceptions import AccessError, UserError
 from odoo.models import NewId
 from odoo.osv import expression
 from odoo.tools import SQL
 
+from odoo.addons.mail.tools.discuss import Store
+
 from ..tools.ids import as_id, defaults_set, real_ids, require_int_ids, stores_other_than
-from .discuss_channel import for_a_user, posted_by_this_module
+from .discuss_channel import DELETING, DELETING_KEY, deleting, for_a_user, posted_by_this_module
 
 _logger = logging.getLogger(__name__)
 
@@ -64,9 +66,6 @@ RULE_FIELDS = frozenset({'id', 'model', 'res_id', 'message_type', 'subtype_id', 
 # fields Odoo prefetches with it are dropped for unreadable task-chat messages instead of failing the check
 RULE_READ = object()
 RULE_READ_KEY = 'woow_project_ai_rule_read'
-# set by unlink around Odoo's own unlink of messages (an object no client can send)
-DELETING = object()
-DELETING_KEY = 'woow_project_ai_deleting'
 # what a message's stored links depend on
 LINK_FIELDS = {'parent_id', 'attachment_ids', 'model', 'res_id', 'author_id'}
 # a domain that cannot match a channel message
@@ -269,16 +268,15 @@ class MailMessage(models.Model):
             return ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', sorted(unreadable))]
         # a message of another model matches the first leaf; one of an ordinary channel the second: its own
         # channel looked up by primary key (correlated with the message row: no set of all task chats is
-        # built); a task-chat message then needs the third: the user's readable task chats (their member chats,
-        # a literal list; a system administrator's compiled sub-query, evaluated once per statement and only
-        # when a task-chat message is met)
+        # built); a task-chat message then needs the third: the user's readable member task chats (a literal
+        # list; system administrators too: the lists of messages show the chats they are a member of, and any
+        # chat they may read opens with its own search, the scoped branch above)
         Channel.flush_model(['woow_project_ai_task_id'])
         exclusion = ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', SQL(
             "(SELECT woow_c.id FROM discuss_channel woow_c WHERE woow_c.id = %s "
             "AND woow_c.woow_project_ai_task_id IS NOT NULL)", SQL.identifier(self._table, 'res_id')))]
-        # (then their readable member chats; for a system administrator, last, all the task chats they may read)
-        return expression.OR([exclusion] + [[('res_id', 'in', value)]
-                                            for value in Channel._woow_project_ai_readable_values()])
+        return expression.OR([exclusion] + [[('res_id', 'in', value)] for value in
+                                            Channel._woow_project_ai_readable_values(member_chats_only=True)])
 
     @api.depends('record_name', 'model', 'res_id')
     @api.depends_context('uid', 'lang')
@@ -333,6 +331,43 @@ class MailMessage(models.Model):
         # not those of task chats they may not read now
         messages = self - self._woow_project_ai_unreadable() if for_a_user(self.env) else self
         return super(MailMessage, messages)._message_notifications_to_store(store)
+
+    def _notify_message_notification_update(self):
+        """Odoo sends the acting user and each message's author the delivery
+        status of their messages, with the message's body and its thread's
+        name; the mail queue does it as superuser, after the send. A task-chat
+        message's notice goes to each of them only while they may read the
+        chat (an author who left it or lost the task meanwhile gets none),
+        built in their own environment."""
+        if not self._ids:
+            return super()._notify_message_notification_update()
+        self.sudo().fetch(['model', 'res_id'])
+        channel_of = self._woow_project_ai_chats_in_cache()
+        chats = self.env['discuss.channel']._woow_project_ai_known_task_chats(set(channel_of.values())) \
+            if channel_of else set()
+        in_chats = self.browse([id_ for id_, chat in channel_of.items() if chat in chats])
+        if self - in_chats:
+            super(MailMessage, self - in_chats)._notify_message_notification_update()
+        acting = self.env.user
+        # (the authors in SQL: the acting user may be one who cannot read a chat of these)
+        self.flush_recordset(['author_id'])
+        author_of = dict(self.env.execute_query(SQL(
+            "SELECT id, author_id FROM mail_message WHERE id = ANY(%s)", in_chats.ids)))
+        for message in in_chats:
+            recipients = {}
+            if not acting._is_public():
+                recipients[acting.partner_id] = acting
+            author = self.env['res.partner'].sudo().browse(author_of.get(message.id) or [])
+            users = author.with_context(active_test=False).user_ids
+            if author and not any(user._is_public() for user in users):
+                recipients.setdefault(author, users.filtered('active')[:1])
+            chat = self.env['discuss.channel'].browse(channel_of[message.id])
+            for partner, reader in recipients.items():
+                if not reader or not chat.with_user(reader).has_access('read'):
+                    continue
+                store = Store()
+                message.with_user(reader).sudo()._message_notifications_to_store(store)
+                partner._bus_send_store(store)
 
     # --- Helpers ---
 
@@ -413,6 +448,7 @@ class MailMessage(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         messages = super().create(vals_list)
         if not self._woow_project_ai_links_nothing(vals_list):
             messages._woow_project_ai_check_stored(created=True)
@@ -448,10 +484,54 @@ class MailMessage(models.Model):
                 # Odoo itself never writes a task-chat message outside superuser: pins in SQL, stars on the
                 # partner's side, edits and their cleanup as superuser
                 self._woow_project_ai_refuse()
+        # (decided before the write: the files linked now are read from the cache)
+        check = LINK_FIELDS & set(vals) and not self._woow_project_ai_adds_new_files_elsewhere(vals)
         res = super().write(vals)
-        if LINK_FIELDS & set(vals):
+        if check:
             self._woow_project_ai_check_stored(moved=bool({'model', 'res_id'} & set(vals)))
         return res
+
+    def _woow_project_ai_adds_new_files_elsewhere(self, vals):
+        """Whether this write only adds files known not to be in a channel to
+        messages known from the cache not to be channel messages: new files of
+        another model than discuss.channel (Command.CREATE, plain strings, no
+        default), or a full list (Command.SET) whose files not linked now are
+        known from the cache not to be in a channel. It links no task-chat
+        file and touches no task-chat message, so the stored rows need no
+        query. Odoo's template mails attach their reports to the mail.mail,
+        mail by mail; its delegated field then sets the message's whole list.
+        Called before the write (the files linked now, from the cache)."""
+        if LINK_FIELDS & set(vals) != {'attachment_ids'}:
+            return False
+        commands = vals['attachment_ids']
+        if not isinstance(commands, (list, tuple)) or not commands:
+            return False
+        models_ = self.env.cache._get_field_cache(self, self._fields['model'])
+        if not all(isinstance(id_, int) and id_ in models_ and models_[id_] != 'discuss.channel' for id_ in self._ids):
+            return False
+        Attachment = self.env['ir.attachment']
+        places = self.env.cache._get_field_cache(Attachment, Attachment._fields['res_model'])
+        linked = self.env.cache._get_field_cache(self, self._fields['attachment_ids'])
+        for command in commands:
+            if not (isinstance(command, (list, tuple)) and len(command) == 3):
+                return False
+            if command[0] == Command.CREATE:
+                if not (isinstance(command[2], dict) and stores_other_than(command[2].get('res_model'), 'discuss.channel')
+                        and not defaults_set(Attachment, ('res_model',))):
+                    return False
+            elif command[0] == Command.SET:
+                ids = command[2]
+                if not isinstance(ids, (list, tuple)) or not all(_is_int(id_) for id_ in ids):
+                    return False
+                for message_id in self._ids:
+                    if message_id not in linked:
+                        return False
+                    added = set(ids).difference(linked[message_id])
+                    if not all(id_ in places and places[id_] != 'discuss.channel' for id_ in added):
+                        return False
+            else:
+                return False
+        return True
 
     def copy_data(self, default=None):
         # Odoo 18's copy reads the copied fields (fetch, checked above, unless they are cached) and never checks
@@ -470,7 +550,7 @@ class MailMessage(models.Model):
         # deletion; ids only leave) is not checked: Odoo empties the whole cache after an unlink, and Odoo empties
         # it before each one when it deletes many messages one by one (a sent mailing), where checking would read
         # every message's place again
-        return super(MailMessage, self.with_context(**{DELETING_KEY: DELETING})).unlink()
+        return super(MailMessage, deleting(self)).unlink()
 
     def _message_reaction(self, content, action, partner, guest, store=None):
         """Reactions in a task chat (the route runs this as superuser, after

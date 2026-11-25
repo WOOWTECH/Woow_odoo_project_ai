@@ -16,8 +16,8 @@ cross-product contract, which the Discuss AI module (woow_ai_contact) follows
 too, so one workflow can serve both; nothing is shared with it. The
 ``events`` key is always there, empty (task chats have no events).
 
-Ported from woow_ai_contact 18.0.2.0.0 (``ai_contact_backend.py``), without
-the Hermes cases and the conversation events.
+Ported from woow_ai_contact 18.0.2.0.0 (``ai_contact_backend.py``), with its
+two backend types only (n8n and LiteLLM) and no conversation events.
 """
 
 import base64
@@ -29,6 +29,8 @@ import re
 import socket
 import threading
 import time
+import traceback
+import unicodedata
 from datetime import datetime, timezone
 
 import requests
@@ -37,9 +39,18 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError, ReadTimeoutErr
 from odoo import api, models
 
 from ..tools import media
-from .discuss_channel import one_line_name
+from .discuss_channel import one_line_name, trusted
 
 _logger = logging.getLogger(__name__)
+
+
+def log_unexpected(logger, message, args, error, level=logging.ERROR):
+    """Log an unexpected failure with its type and where it happened, never its
+    text: an exception's text may carry a key, a header, a URL or an upstream
+    answer (contract v1, "Secrets"). The frames show the code lines, not the
+    values."""
+    frames = ''.join(traceback.format_tb(error.__traceback__)).rstrip()
+    logger.log(level, message + ' (%s)\n%s', *args, type(error).__name__, frames)
 
 INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 INLINE_IMAGE_MESSAGES = 3  # the most recent user messages whose images may be inlined
@@ -276,13 +287,18 @@ class WoowProjectAiAssistantBackend(models.Model):
 
     @api.model
     def _identity(self, partner):
-        """Basic identity of the person the AI talks to (no login is delegated)."""
+        """Basic identity of the person the AI talks to (no login is delegated).
+        ``name`` is the name as stored; a name with an '@' (a partner named
+        after an e-mail address) counts as no name: '' (contract 3.6, 3.14)."""
         partner = partner.sudo()
         user = partner.with_context(active_test=False).user_ids[:1] if partner else self.env['res.users']
+        name = partner.name or ''
+        if '@' in unicodedata.normalize('NFKC', name):
+            name = ''
         return {
             'user_id': user.id or None,
             'partner_id': partner.id or None,
-            'name': partner.name or '',
+            'name': name,
             'email': partner.email or '',
             'lang': (user.lang if user else partner.lang) or '',
             'tz': (user.tz if user else partner.tz) or '',
@@ -301,9 +317,11 @@ class WoowProjectAiAssistantBackend(models.Model):
         else:
             account = 'contact without user account'
         lines = ['You are chatting in Odoo with this person (information only, no login is delegated):']
-        for label, value in (('name', one_line_name(identity.get('name'))), ('language', identity.get('lang')),
-                             ('timezone', identity.get('tz')), ('account', account),
-                             ('user_id', identity.get('user_id')), ('partner_id', identity.get('partner_id'))):
+        # the kind of account first, then the ids, the language and the time zone; the name last, cleaned
+        # (contract 3.7: a name, which anybody may choose, never comes before the facts the system sets)
+        for label, value in (('account', account), ('user_id', identity.get('user_id')),
+                             ('partner_id', identity.get('partner_id')), ('language', identity.get('lang')),
+                             ('timezone', identity.get('tz')), ('name', one_line_name(identity.get('name')))):
             if value not in (None, '', False):
                 lines.append('- %s: %s' % (label, value))
         return '\n'.join(lines)
@@ -778,11 +796,19 @@ class WoowProjectAiAssistantBackend(models.Model):
         (an http_error for the caller), so the conversation is never re-sent
         to a host or a scheme that endpoint_url_allowed did not check. Reads
         nothing from the database (no transaction is open here).
+
+        ``deadline`` is the total time of the answer: a retry's read timeout is
+        what is left of it (at least 1 s), so a retry never makes the call wait
+        past the connection's timeout (by more than the connect timeout of the
+        last attempt, inside the runner's margin).
         """
-        timeout = (CONNECT_TIMEOUT, read_timeout)
         attempt = 0
         while True:
             retry_reason = None
+            attempt_read_timeout = read_timeout
+            if deadline and attempt:
+                attempt_read_timeout = min(read_timeout, max(1.0, deadline - time.time()))
+            timeout = (CONNECT_TIMEOUT, attempt_read_timeout)
             try:
                 response = requests.post(url, data=body, headers=headers, timeout=timeout, stream=stream,
                                          allow_redirects=False)
@@ -897,8 +923,9 @@ class WoowProjectAiAssistantBackend(models.Model):
                 log['http_status'] = e.http_status
             result['error'] = str(e)
         except Exception as e:  # noqa: BLE001 - every failure becomes an error reply
-            _logger.exception("Project AI assistant %s: backend call failed", assistant.id)
-            # the type name only: an exception's text may carry an address or an upstream answer
+            # the type name only, in the log too: an exception's text may carry a key, an address or an upstream
+            # answer
+            log_unexpected(_logger, "Project AI assistant %s: backend call failed", (assistant.id,), e)
             log['status'], log['error'] = 'error', type(e).__name__
             result['error'] = log['error']
         duration_ms = int((time.time() - started) * 1000)
@@ -954,7 +981,8 @@ class WoowProjectAiAssistantBackend(models.Model):
                 vals['response_payload'] = _json_dumps(self._redact_response(log['response']))[:MAX_LOG_PAYLOAD]
         try:
             with self.env.cr.savepoint():
-                return self.env['woow.project.ai.call.log'].sudo().create(vals)
-        except Exception:  # noqa: BLE001 - a log must never break the reply
-            _logger.exception("Project AI assistant %s: could not create the call log", assistant.id)
+                # (never a client's default_* key: Test Connection is called with the client's context)
+                return trusted(self.env['woow.project.ai.call.log'].sudo()).create(vals)
+        except Exception as e:  # noqa: BLE001 - a log must never break the reply
+            log_unexpected(_logger, "Project AI assistant %s: could not create the call log", (assistant.id,), e)
             return self.env['woow.project.ai.call.log']

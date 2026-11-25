@@ -33,6 +33,8 @@ class MailMail(models.Model):
             Channel.flush_model(['woow_project_ai_task_id'])
             exclusion = ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', SQL(
                 "(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))]
+            # (the queue is small: a system administrator's compiled sub-query of all the task chats they may read
+            # stays, so that the Emails list shows every mail they may read)
             exclusion = expression.OR([exclusion] + [[('res_id', 'in', value)]
                                                      for value in Channel._woow_project_ai_readable_values()])
             domain = expression.AND([domain, exclusion])
@@ -54,6 +56,7 @@ class MailMail(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         mails = super().create(vals_list)
         if not self.env.su and not self._woow_project_ai_new_messages_elsewhere(vals_list):
             mails._woow_project_ai_check_messages()

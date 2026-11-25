@@ -6,11 +6,20 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
+def post_init_hook(env):
+    """The new column discuss_channel.woow_project_ai_task_id gets its
+    statistics at once (autovacuum would analyse a large discuss_channel only
+    later): PostgreSQL plans the global channel rule's ``IS NULL`` leaf with
+    them, in every channel query."""
+    env.cr.execute("ANALYZE discuss_channel")
+
+
 def uninstall_hook(env):
     """Without this module nobody keeps the members of the task AI
     conversations in line with the task access (no sync, no post check, no
-    read rule), so their people are removed (the AI assistants' bots stay) and
-    they are archived: history kept, readable by system administrators only.
+    read rule), so their people are removed (the AI assistants' bots stay;
+    in two statements, whatever the number of chats) and they are archived:
+    history kept, readable by system administrators only.
     The bot partners stay archived (they author the old AI messages). The
     system parameters the code writes (the cron runner report, the sweep's
     cursor: no xmlid) are removed."""
@@ -24,10 +33,23 @@ def uninstall_hook(env):
                    (('woow_ai_task.dispatcher_state', 'woow_ai_task.sweep_cursor'),))
     Channel = env['discuss.channel'].sudo().with_context(active_test=False)
     channels = Channel.search([('woow_project_ai_task_id', '!=', False)])
-    bots = Channel._woow_project_ai_bot_partner_ids()
-    people = channels.channel_member_ids.filtered(lambda member: member.partner_id.id not in bots)
-    if people:
-        Channel._woow_project_ai_remove_members(people, reason='woow_ai_task uninstalled')
+    bots = sorted(Channel._woow_project_ai_bot_partner_ids())
+    # the people leave every task chat at once: two statements, not member by member with its notices (a tenant
+    # may have thousands of chats, tens of thousands of members: one web request). Their unread notifications of
+    # the chats' messages are marked read first; no "left" notice and no bus notice per member: the chats are
+    # archived next, and the clients drop them at their next load
+    env.flush_all()
+    env.cr.execute("""
+        UPDATE mail_notification n SET is_read = TRUE, read_date = now() AT TIME ZONE 'UTC'
+          FROM mail_message m JOIN discuss_channel c ON c.id = m.res_id AND c.woow_project_ai_task_id IS NOT NULL
+         WHERE m.id = n.mail_message_id AND m.model = 'discuss.channel' AND n.is_read IS NOT TRUE
+           AND NOT n.res_partner_id = ANY(%s)""", [bots])
+    env.cr.execute("""
+        DELETE FROM discuss_channel_member m USING discuss_channel c
+         WHERE c.id = m.channel_id AND c.woow_project_ai_task_id IS NOT NULL
+           AND (m.partner_id IS NULL OR NOT m.partner_id = ANY(%s))""", [bots])
+    removed = env.cr.rowcount
+    env.invalidate_all()
     active = channels.filtered('active')
     if active:
         active.write({'active': False})
@@ -36,4 +58,4 @@ def uninstall_hook(env):
     if partners:
         partners.write({'active': False})
     _logger.info("woow_ai_task uninstalled: %s task AI conversation(s) archived, %s member(s) removed",
-                 len(channels), len(people))
+                 len(channels), removed)

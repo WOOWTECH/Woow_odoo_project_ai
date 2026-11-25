@@ -16,6 +16,10 @@ and the Discussions bridge of the portal notification centre
   clear.
 * The unread messages of the customer's task AI chats have their own notice
   and /my card, which open the task page (one task) or the customer's tasks.
+* The centre never lists a notification of a task AI chat message the
+  customer cannot read now (mentioned as a member, then they left the chat
+  or lost the task): its list, counts and routes stay consistent, and the
+  page never fails on such a notification.
     """,
     'author': 'WOOWTECH',
     'website': 'https://github.com/WOOWTECH/Woow_odoo_project_ai',

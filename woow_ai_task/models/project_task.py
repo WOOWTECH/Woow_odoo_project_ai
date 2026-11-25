@@ -16,7 +16,7 @@ from odoo import Command, api, fields, models
 from odoo.exceptions import AccessError, MissingError, UserError
 
 from ..tools.ids import as_id, require_int_ids
-from .discuss_channel import html_to_text, is_sync, with_sync
+from .discuss_channel import deleting, html_to_text, is_sync, one_line_name, trusted, with_sync
 from .project_project import DEFAULT_PAUSE_MINUTES, PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
 _logger = logging.getLogger(__name__)
@@ -37,6 +37,8 @@ CONTEXT_LABELS = {
 CONTEXT_HEADER = '這張任務的資料（依提問者本人的權限讀取；不含留言與內部記錄）：'
 MAX_CONTEXT_CHARS = 8000
 MAX_RELATED_NAMES = 50
+# people among the related records: their names by the name rule of the identity block (one_line_name)
+PERSON_MODELS = ('res.users', 'res.partner')
 TRUNCATED = '…（以下省略）'
 ACCESS_FIELDS = {'project_id', 'active', 'user_ids', 'company_id', 'parent_id'}
 # written by this module only (refused in create / write otherwise, default_* context keys included)
@@ -103,6 +105,7 @@ class ProjectTask(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         if not is_sync(self.env) and any((GUARDED_FIELDS | CHANNEL_FIELDS) & set(vals) for vals in vals_list):
             raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the task '
                                          'itself.'))
@@ -320,7 +323,7 @@ class ProjectTask(models.Model):
         """One field of this task as text, read with this record's user
         (field access checked; related records filtered by the user's own
         access, whatever the shared cache holds, and by the access of every
-        user of ``audience``)."""
+        user of ``audience``; their names as _woow_project_ai_name_text)."""
         self.ensure_one()
         self.check_field_access_rights('read', [name])
         field = self._fields[name]
@@ -334,10 +337,12 @@ class ProjectTask(models.Model):
                 names = records[:MAX_RELATED_NAMES].mapped('display_name')
             finally:
                 self.invalidate_recordset([name])
-            return '、'.join(name for name in names if name)
+            texts = [self._woow_project_ai_name_text(field, related) for related in names]
+            return '、'.join(text for text in texts if text)
         value = self[name]
         if field.type == 'many2one':
-            return self._woow_project_ai_shared_with(value._filtered_access('read'), audience).display_name or ''
+            return self._woow_project_ai_name_text(
+                field, self._woow_project_ai_shared_with(value._filtered_access('read'), audience).display_name)
         if field.type == 'html':
             return html_to_text(value)
         if field.type == 'datetime':
@@ -347,6 +352,15 @@ class ProjectTask(models.Model):
         if field.type == 'selection':
             return dict(field._description_selection(self.env)).get(value) or ''
         return ' '.join(str(value or '').split())
+
+    def _woow_project_ai_name_text(self, field, name):
+        """A related record's name on its line of the summary: a person's
+        (a user, a contact) by the name rule of the identity block and the
+        history labels (one_line_name: a name its owner chose cannot start a
+        line of its own or pass for a label), any other on one line."""
+        if field.comodel_name in PERSON_MODELS:
+            return one_line_name(name)
+        return ' '.join(str(name or '').split())
 
     def _woow_project_ai_shared_with(self, records, audience):
         """Those of `records` that every user of `audience` can read too (an
@@ -373,9 +387,11 @@ class ProjectTask(models.Model):
         long). Called for every such customer message: one To-Do for the
         first assignee (else the project manager), unless one is still open on
         this task (it is reused, never doubled; once done, the next message
-        schedules a new one)."""
+        schedules a new one). From a trusted context: in a customer's post,
+        nothing the client sent (default_user_id, default_date_deadline,
+        mail_activity_automation_skip...) reaches the To-Do."""
         self.ensure_one()
-        task = self.sudo()
+        task = trusted(self.sudo())
         current = task.woow_project_ai_alert_activity_id.with_context(active_test=False).exists()
         if current and current.active and current.res_model == 'project.task' and current.res_id == task.id:
             return current
@@ -443,8 +459,15 @@ class ProjectTask(models.Model):
         return res
 
     def unlink(self):
-        # a deleted task deletes its AI conversations (messages and files with them)
-        chats = self.env['discuss.channel']._woow_project_ai_chats_of(self)
+        # a deleted task deletes its AI conversations (messages and files with them), and so do the subtasks Odoo
+        # deletes with it (project.task.unlink adds them, as found here: same context): their chats would
+        # otherwise go with the database's cascade, which leaves their messages and files behind. The module's
+        # own cascade (DELETING): Odoo's reads of the deleted messages and files as superuser are not checked
+        # against the deleting user, who may not read the chats (the task's own access is checked by super())
+        # (Odoo's own list is read in SQL after the chats are deleted, which flushes: the same values here)
+        self.env['project.task'].flush_model(['active', 'parent_id'])
+        tasks = self | self._get_all_subtasks()
+        chats = self.env['discuss.channel']._woow_project_ai_chats_of(tasks)
         if chats:
-            with_sync(chats).unlink()
+            deleting(with_sync(chats)).unlink()
         return super().unlink()

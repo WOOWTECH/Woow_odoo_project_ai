@@ -60,9 +60,11 @@ class TestCoexistence(AiTaskFixtures, HttpCase):
 
     def discuss_ai_assistant(self):
         """A Discuss AI (woow_ai_contact) assistant for every employee and portal user, direct chats on."""
+        # (a LiteLLM connection needs its model: Discuss AI 2.2.0, like this module, keeps one without it from
+        # answering)
         connection = self.env['woow.ai.connection'].create({
             'name': 'Discuss LiteLLM', 'backend_type': 'openai', 'endpoint_url': 'https://discuss-llm.example.com/v1',
-            'api_key': TEST_KEY, 'openai_stream': False})
+            'api_key': TEST_KEY, 'model': 'test-model', 'openai_stream': False})
         return self.env['woow.ai.contact'].create({
             'name': 'Discuss Advisor', 'connection_id': connection.id,
             'allowed_group_ids': [Command.set([self.env.ref('base.group_user').id,

@@ -709,9 +709,14 @@ class TestDispatchModel(ProjectAiCase):
     def test_cron_pass(self):
         before = self.dispatcher_triggers()
         stats = {'started': 2, 'max_parallel': 2, 'fetches': 3, 'budget_reached': True, 'retrigger_in': 0.0}
+        # the pass' room must not depend on the server's limits or on how long ago this module was loaded
+        # (the probe then counts everything since the load: a long test run left "no room for one reply")
+        no_ping = {'pid': None, 'at': None, 'probe': False}
         with self.runner(CRON_INFO), patch.object(ai_job, 'Dispatcher') as dispatcher, \
                 patch.object(type(self.Job), '_dispatch_release_cursor') as release, \
-                patch.object(ai_job, '_job_cursor', side_effect=lambda db: nullcontext(self.env.cr)):
+                patch.object(ai_job, '_job_cursor', side_effect=lambda db: nullcontext(self.env.cr)), \
+                patch.dict(config.options, {'limit_time_real': 120, 'limit_time_real_cron': 900}), \
+                patch.dict(ai_job._watchdog_ping, no_ping):
             dispatcher.return_value.run.return_value = stats
             self.assertEqual(self.Job.with_context(cron_id=1)._cron_run_jobs(), 2)
         release.assert_called_once()

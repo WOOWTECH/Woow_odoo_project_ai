@@ -34,7 +34,7 @@ from odoo import SUPERUSER_ID, api, models
 from odoo.exceptions import AccessError
 
 from ..tools.ids import as_id, defaults_set, real_ids, require_int_ids, stores_other_than
-from .discuss_channel import for_a_user
+from .discuss_channel import DELETING, DELETING_KEY, for_a_user
 from .mail_message import RULE_READ, RULE_READ_KEY
 
 _logger = logging.getLogger(__name__)
@@ -108,8 +108,9 @@ class IrAttachment(models.Model):
         # a file read from the database as superuser for a real user (a related or stored computed field of
         # another model, an onchange, Odoo's own sudo reads): the content and name of a task-chat file they may
         # not read are refused; res_model / res_id come with them (same query) to classify the rows from the
-        # cache (no query for files of other records)
-        if not self.env.su or not for_a_user(self.env):
+        # cache (no query for files of other records). Not in a deletion of task-chat content (DELETING: Odoo's
+        # cascade reads the stored file names of the files it deletes)
+        if not self.env.su or not for_a_user(self.env) or self.env.context.get(DELETING_KEY) is DELETING:
             return super()._fetch_query(query, fields)
         content = [field for field in fields if field.name not in RULE_FIELDS]
         if not content:
@@ -205,6 +206,7 @@ class IrAttachment(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         attachments = super().create(vals_list)
         # (no query for files of another model than discuss.channel, given as a plain string or none, without a
         # default: most files)

@@ -8,7 +8,7 @@ record's own attachments, which are never task-chat files."""
 
 from odoo import api, models
 
-from ..tools.ids import real_ids
+from ..tools.ids import defaults_set, real_ids
 
 
 class MailThreadMainAttachment(models.AbstractModel):
@@ -16,8 +16,12 @@ class MailThreadMainAttachment(models.AbstractModel):
 
     @api.model_create_multi
     def create(self, vals_list):
+        vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
         records = super().create(vals_list)
-        if not self.env.su and any(vals.get('message_main_attachment_id') for vals in vals_list):
+        # a value, or a default (a default_message_main_attachment_id key of the context, an ir.default: Odoo
+        # adds them to the values after this point): checked as stored
+        if not self.env.su and (defaults_set(self, ('message_main_attachment_id',))
+                                or any(vals.get('message_main_attachment_id') for vals in vals_list)):
             records._woow_project_ai_check_main_attachment()
         return records
 

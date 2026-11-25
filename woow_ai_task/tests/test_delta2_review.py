@@ -333,9 +333,22 @@ class TestDelta2Review(Delta2Helpers, AiTaskFixtures, TransactionCase):
     # --- 8 / 9: no hook on every model any more ---
 
     def test_08_a_generator_create(self):
-        files = self.env['ir.attachment'].with_user(self.staff).create(
-            {'name': 'g%s.txt' % i, 'raw': b'x'} for i in range(2))
-        self.assertEqual(len(files), 2)
+        # any iterable of values, a one-shot generator too: the module's create overrides read it once (before
+        # anything else) and check the rows as stored, so a generator is never "nothing to check". Through
+        # models no other module of the database consumes the values of first (Odoo's website attachment
+        # create, for one, iterates them before its super(): it cannot take a generator, whatever this module does)
+        Message = self.env['mail.message'].with_user(self.staff)
+        notes = Message.create({'model': 'project.task', 'res_id': self.task.id, 'body': 'g%s' % i,
+                                'message_type': 'comment'} for i in range(2))
+        self.assertEqual(len(notes), 2)
+        internal = self.open_tab(self.staff, 'internal')
+        # a message straight into a task chat, or a member added to one: refused whatever iterable carries it
+        self.refused(lambda: self.env['mail.message'].with_user(self.staff).create(
+            {'model': 'discuss.channel', 'res_id': internal.id, 'body': 'g%s' % i, 'message_type': 'comment'}
+            for i in range(1)))
+        self.refused(lambda: self.env['discuss.channel.member'].with_user(self.staff).sudo().create(
+            {'channel_id': internal.id, 'partner_id': self.staff2.partner_id.id} for _i in range(1)))
+        self.assertNotIn(self.staff2.partner_id, self.members(internal))
 
     def test_09_mark_as_read_elsewhere_checks_no_task_chat(self):
         group = self.env['discuss.channel'].with_user(self.staff).create({'name': 'g', 'channel_type': 'group'})
