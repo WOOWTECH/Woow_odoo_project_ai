@@ -37,6 +37,7 @@ from odoo.tools import SQL
 from odoo.tools.query import Query
 
 from ..tools.ids import as_id, require_int_ids
+from ..tools.logs import log_unexpected
 from ..tools.record_text import MORE_NAMES, cap, clean_data_text, field_text
 from .project_project import PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
@@ -171,12 +172,13 @@ def readable_query(env, model_name, user, tab, companies, candidates=None):
         raise TypeError('readable query of %s: %r' % (model_name, type(result)))
     except psycopg2.Error:
         raise  # the transaction is aborted: swallowing it would only move the failure to the next query
-    except Exception:  # noqa: BLE001 - AccessError, a rule that cannot be evaluated for this user...
+    except Exception as error:  # noqa: BLE001 - AccessError, a rule that cannot be evaluated for this user...
         key = (env.cr.dbname, model_name, user.id)
         if key not in _query_errors_logged:
             _query_errors_logged.add(key)
-            _logger.warning("Project AI consultant: records of %s cannot be checked for user %s; none of them is "
-                            "readable for them", model_name, user.id, exc_info=True)
+            # the type name and the code lines only (tools/logs.py): an exception's text may carry a record's name
+            log_unexpected(_logger, "Project AI consultant: records of %s cannot be checked for user %s; none of "
+                           "them is readable for them", (model_name, user.id), error, level=logging.WARNING)
         return None
 
 
@@ -556,13 +558,20 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
         Assistant = self.env['woow.project.ai.assistant']
         company = project.company_id or self.env.company
         lang = Assistant._installed_lang(company.partner_id.lang, self.env.lang)
+        Task = self.env['project.task']
         vals = dict(self._woow_project_ai_consult_task_values())
         vals.update({
             'name': self.with_context(lang=lang)._woow_project_ai_consult_task_name(),
             'project_id': project.id,
             'user_ids': [Command.set([user.id])],
             'woow_project_ai_consult_entry': True,
+            'woow_project_ai_alert_activity_id': False,
         })
+        # explicit values for every field of this module and of the consultant modules: the asker's own ir.default
+        # rows (any employee may set personal defaults on any model, contract 3.5) reach none of them
+        for spec in Task._woow_project_ai_consult_specs():
+            if spec.field not in vals:
+                vals[spec.field] = [Command.set([])] if Task._fields[spec.field].type == 'many2many' else False
         try:
             with self.env.cr.savepoint():
                 task = with_sync(trusted(self.env['project.task'].sudo())).create(vals)

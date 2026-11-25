@@ -10,8 +10,10 @@ sales rights, portal user C, salesman A2 of company A only, L3 of company B.
 A, B, M and A2 have Project user rights. The consultation project's internal
 assistant is a LiteLLM stub (no real request)."""
 
+import ast
 import json
 import re
+from pathlib import Path
 from unittest.mock import patch
 
 from odoo import Command
@@ -200,6 +202,26 @@ class TestCrmConsultButtons(CrmConsultCase):
         body = self.ask(chat, self.a)
         self.assertNotIn(CONSULT_HEADER, self.system(body))
         self.assertFalse(task._woow_project_ai_user_allowed(self.b, 'internal'), 'the link still gates')
+
+    def test_personal_defaults_reach_no_consultant_row(self):
+        """Contract v1.2 3.5: the asker's own ir.default rows (any employee may set personal defaults on any
+        model) reach neither the consultation task's module fields nor the ledger (written in SQL)."""
+        self.enable_crm()
+        Default = self.env['ir.default'].with_user(self.a)
+        Default.set('project.task', LINK_FIELD, self.lead2.id, user_id=True)
+        Default.set('project.task', 'woow_project_ai_consult_entry', False, user_id=True)
+        activity_type = self.env.ref('mail.mail_activity_data_todo')
+        activity = self.env['mail.activity'].create({
+            'res_model_id': self.env['ir.model']._get_id('crm.lead'), 'res_id': self.lead.id,
+            'activity_type_id': activity_type.id, 'user_id': self.a.id, 'summary': 'not the AI To-Do'})
+        Default.set('project.task', 'woow_project_ai_alert_activity_id', activity.id, user_id=True)
+        Default.set('woow.project.ai.consult.sent', 'res_model', 'res.partner', user_id=True)
+        Default.set('woow.project.ai.consult.sent', 'res_id', self.a.partner_id.id, user_id=True)
+        task, chat = self.press(self.a)
+        self.assertEqual(task[LINK_FIELD], self.lead)
+        self.assertTrue(task.woow_project_ai_consult_entry)
+        self.assertFalse(task.woow_project_ai_alert_activity_id)
+        self.assertEqual(self.ledger_rows(chat), [(chat.id, 'crm.lead', self.lead.id)])
 
     def test_portal_user_and_other_company(self):
         self.enable_crm()
@@ -647,6 +669,24 @@ class TestCrmConsultProfileSeed(CrmConsultCase):
         self.assertIn('name="%s"' % LINK_FIELD, admin_arch)
         self.assertNotIn(LINK_FIELD, self.env['project.task'].with_user(self.a).get_view(view_type='form')['arch'],
                          'system administrators only')
+
+    def test_sources_never_log_exception_text(self):
+        """As woow_ai_task's own scan (tests/test_r7_review.py, contract v1.2 3.9): no logger call passes
+        exc_info or stack_info, nothing calls .exception / format_exc / print_exc; tools/logs.log_unexpected."""
+        root = Path(__file__).resolve().parent.parent
+        offenders = []
+        for path in sorted(root.rglob('*.py')):
+            if 'tests' in path.relative_to(root).parts:
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                where = '%s:%s' % (path.relative_to(root.parent), node.lineno)
+                if node.func.attr in ('exception', 'format_exc', 'print_exc'):
+                    offenders.append('%s %s()' % (where, node.func.attr))
+                if any(keyword.arg in ('exc_info', 'stack_info') for keyword in node.keywords):
+                    offenders.append('%s exc_info/stack_info' % where)
+        self.assertFalse(offenders)
 
     def test_seed_is_off_and_admin_only(self):
         profile = self.env.ref('woow_ai_task_crm.consult_profile_crm_lead')
