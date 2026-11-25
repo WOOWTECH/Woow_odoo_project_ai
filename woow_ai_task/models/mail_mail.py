@@ -33,9 +33,8 @@ class MailMail(models.Model):
             Channel.flush_model(['woow_project_ai_task_id'])
             exclusion = ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', SQL(
                 "(SELECT id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))]
-            readable = Channel._woow_project_ai_readable_value()
-            if not (isinstance(readable, list) and not readable):
-                exclusion = ['|'] + exclusion + [('res_id', 'in', readable)]
+            exclusion = expression.OR([exclusion] + [[('res_id', 'in', value)]
+                                                     for value in Channel._woow_project_ai_readable_values()])
             domain = expression.AND([domain, exclusion])
         return super()._search(domain, offset, limit, order)
 

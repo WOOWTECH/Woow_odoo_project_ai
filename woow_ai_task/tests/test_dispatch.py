@@ -557,7 +557,7 @@ class TestDispatchModel(ProjectAiCase):
                 patch.object(cr, 'commit'), patch.object(cr, 'rollback'):
             job._run_job(commit=True)
         self.assertEqual(job.state, 'pending')
-        self.assertIn('boom', job.error)
+        self.assertEqual(job.error, 'RuntimeError', 'the type name only, never the exception text (the contract)')
         self.assertGreater(job.run_after, fields.Datetime.now() + timedelta(seconds=30))
         self.env.flush_all()
         self.assertFalse(self.Job._due_job_id(chat.id))
@@ -836,7 +836,8 @@ class TestJobQueries(ProjectAiCase):
             small = self.job_queries(contact, 2)
             backend_type = contact.connection_id.backend_type
             other = make_assistant(self.env, name='Big %s' % backend_type, backend_type=backend_type,
-                                 endpoint_url=contact.connection_id.endpoint_url, api_key='k', openai_stream=False)
+                                 endpoint_url=contact.connection_id.endpoint_url, api_key='k', openai_stream=False,
+                                 model='big-model' if backend_type == 'openai' else False)
             big = self.job_queries(other, 12)
             self.assertLessEqual(big - small, 2, '%s: %s queries for 2 messages, %s for 12' % (
                 backend_type, small, big))

@@ -11,9 +11,10 @@ passes ``before_call`` (the job commits there).
 The n8n body also carries the n8n Chat Trigger fields (``action``,
 ``sessionId``, ``chatInput``), the answer may be the AI Agent's ``output``,
 the signing secret is optional (empty: nothing is signed, e.g. for a public
-Chat Trigger) and a call waits at most 90 s: the same conventions as the
-Discuss AI module (woow_ai_contact), so one workflow can serve both; nothing
-is shared with it.
+Chat Trigger) and an answer waits at most 300 s: the conventions of the
+cross-product contract, which the Discuss AI module (woow_ai_contact) follows
+too, so one workflow can serve both; nothing is shared with it. The
+``events`` key is always there, empty (task chats have no events).
 
 Ported from woow_ai_contact 18.0.2.0.0 (``ai_contact_backend.py``), without
 the Hermes cases and the conversation events.
@@ -36,6 +37,7 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError, ReadTimeoutErr
 from odoo import api, models
 
 from ..tools import media
+from .discuss_channel import one_line_name
 
 _logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ CONNECT_TIMEOUT = 10
 STREAM_IDLE_TIMEOUT = 30  # seconds without any byte from a streamed answer
 RETRY_WAITS = (3, 10)  # seconds before the 1st / 2nd retry
 RETRY_HTTP_STATUSES = (429, 503)
-N8N_MAX_TIMEOUT = 90  # seconds per n8n call (Cloudflare cuts at about 100 s)
+N8N_MAX_TIMEOUT = 300  # seconds an n8n answer may wait (a long workflow: an in-cluster URL, or {"skip": true} and a push)
 TEST_TIMEOUT = 15
 MAX_LOG_PAYLOAD = 200000  # characters
 MAX_ERROR_LENGTH = 300
@@ -299,7 +301,7 @@ class WoowProjectAiAssistantBackend(models.Model):
         else:
             account = 'contact without user account'
         lines = ['You are chatting in Odoo with this person (information only, no login is delegated):']
-        for label, value in (('name', identity.get('name')), ('language', identity.get('lang')),
+        for label, value in (('name', one_line_name(identity.get('name'))), ('language', identity.get('lang')),
                              ('timezone', identity.get('tz')), ('account', account),
                              ('user_id', identity.get('user_id')), ('partner_id', identity.get('partner_id'))):
             if value not in (None, '', False):
@@ -313,12 +315,15 @@ class WoowProjectAiAssistantBackend(models.Model):
         LiteLLM does not pass it to the model. The surface
         (``discuss.channel._woow_project_ai_surface_info``) comes first, flat, as
         ``surface_<key>`` (e.g. ``surface_type``), then the identity as
-        ``odoo_<key>``; keys over the limit are left out."""
+        ``odoo_<key>``; keys over the limit are left out. Never the email (it
+        may stay in provider logs; only n8n gets it, in ``user``)."""
         metadata = {'session_id': session_id}
         for prefix, values in (('surface', surface or {}), ('odoo', identity)):
             for key, value in values.items():
                 if len(metadata) >= METADATA_MAX_KEYS:
                     return metadata
+                if (prefix, key) == ('odoo', 'email'):
+                    continue
                 if value in (None, '') or isinstance(value, (dict, list, tuple)):
                     continue
                 if isinstance(value, bool):
@@ -581,6 +586,8 @@ class WoowProjectAiAssistantBackend(models.Model):
             'system_prompt': channel._woow_project_ai_system_prompt(assistant, history) or '',
             'message': message,
             'history': [entry_json(e) for e in past],
+            # events of the conversation (the contract's key, always present): task chats have none
+            'events': [],
         }
 
     # --- Response parsing ---
@@ -891,7 +898,8 @@ class WoowProjectAiAssistantBackend(models.Model):
             result['error'] = str(e)
         except Exception as e:  # noqa: BLE001 - every failure becomes an error reply
             _logger.exception("Project AI assistant %s: backend call failed", assistant.id)
-            log['status'], log['error'] = 'error', '%s: %s' % (type(e).__name__, e)
+            # the type name only: an exception's text may carry an address or an upstream answer
+            log['status'], log['error'] = 'error', type(e).__name__
             result['error'] = log['error']
         duration_ms = int((time.time() - started) * 1000)
         result['call_log'] = assistant._create_call_log(channel, job, log, duration_ms)

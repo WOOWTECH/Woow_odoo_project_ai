@@ -180,9 +180,12 @@ class TestAiConnection(ProjectAiCase):
         self.assertEqual(self.connection.readiness, 'ok')
         self.assertEqual(self.n8n_connection.readiness, 'ok')
         cases = {
-            'no URL': (Connection.create({'name': 'a', 'api_key': TEST_KEY}), 'Set the endpoint URL.'),
-            'no key': (Connection.create({'name': 'b', 'endpoint_url': 'https://llm.example.com/v1'}),
+            'no URL': (Connection.create({'name': 'a', 'api_key': TEST_KEY, 'model': 'm'}), 'Set the endpoint URL.'),
+            'no key': (Connection.create({'name': 'b', 'endpoint_url': 'https://llm.example.com/v1', 'model': 'm'}),
                        'Set the API key'),
+            # the LiteLLM model is required (the contract): LiteLLM picks the deployment by its name
+            'no model': (Connection.create({'name': 'c', 'endpoint_url': 'https://llm.example.com/v1',
+                                            'api_key': TEST_KEY, 'model': '  '}), 'Set the model'),
         }
         for label, (connection, reason) in cases.items():
             with self.subTest(label):
@@ -206,7 +209,7 @@ class TestAiConnection(ProjectAiCase):
         ready = Connection.search(mine + [('readiness', '=', 'ok')])
         self.assertEqual(ready, self.connection | self.n8n_connection | n8n)
         blocked = Connection.search(mine + [('readiness', '!=', 'ok')])
-        self.assertEqual(blocked, cases['no URL'][0] | cases['no key'][0])
+        self.assertEqual(blocked, cases['no URL'][0] | cases['no key'][0] | cases['no model'][0])
         self.assertEqual(Connection.search(mine + [('readiness', '=', 'blocked')]), blocked)
         with self.assertRaises(UserError):
             Connection.search([('readiness', 'in', ['ok'])])
@@ -216,6 +219,8 @@ class TestAiConnection(ProjectAiCase):
             form.endpoint_url = 'https://llm.example.com/v1'
             self.assertEqual(form.readiness, 'blocked')
             form.api_key = 'typed-placeholder'
+            self.assertEqual(form.readiness, 'blocked')
+            form.model = 'typed-model'
             self.assertEqual(form.readiness, 'ok')
 
     # --- access ---

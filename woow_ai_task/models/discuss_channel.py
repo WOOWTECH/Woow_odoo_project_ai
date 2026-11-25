@@ -50,6 +50,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 
@@ -58,6 +59,7 @@ from markupsafe import Markup
 
 from odoo import SUPERUSER_ID, Command, api, fields, models
 from odoo.exceptions import AccessError, UserError
+from odoo.osv import expression
 from odoo.service.model import PG_CONCURRENCY_EXCEPTIONS_TO_RETRY
 from odoo.tools import SQL
 from odoo.tools.misc import clean_context
@@ -76,6 +78,7 @@ _TAG_RE = re.compile(r'<[^>]+>')
 MAX_MESSAGE_TEXT = 16000  # characters of one history message sent to a backend
 TRUNCATED_MARKER = '\n…[truncated]'
 MAX_AUTHOR_NAME = 80  # characters of an author name in the history
+_ANGLE_RUN_RE = re.compile(r'<{3,}|>{3,}')
 
 # The context value of this module's own membership changes. An object, so a
 # client cannot forge it (JSON-RPC contexts only carry JSON values), like
@@ -166,6 +169,19 @@ MEMBER_WRITABLE_FIELDS = {'name', 'description'}
 CRON_BATCH = 200
 
 
+def one_line_name(value):
+    """A person's name as the AI reads it (history labels, the identity block
+    of the instructions): NFKC, every white space run one space, no other
+    control or format character (zero-width, bidirectional marks), runs of
+    three or more < or > as one, [ and ] as ( and ), at most 80 characters.
+    A name is any text its owner chose."""
+    text = ' '.join(unicodedata.normalize('NFKC', str(value or '')).split())
+    text = ''.join(c for c in text if unicodedata.category(c) not in ('Cc', 'Cf'))
+    text = _ANGLE_RUN_RE.sub(lambda match: match.group(0)[0], text)
+    text = ' '.join(text.replace('[', '(').replace(']', ')').split())
+    return text[:MAX_AUTHOR_NAME]
+
+
 def html_to_text(body):
     """Message HTML -> plain text, keeping line breaks."""
     text = _BREAK_RE.sub('\n', str(body or ''))
@@ -242,12 +258,11 @@ class DiscussChannel(models.Model):
         if operator not in ('=', '!=') or not isinstance(value, bool):
             raise UserError(self.env._('This field can only be searched as equal to True or False.'))
         # the global rule of every channel search
-        readable = self._woow_project_ai_readable_value()
+        leaves = [('id', 'in', value_) for value_ in self._woow_project_ai_readable_values()]
         if (operator == '=') == value:
-            if isinstance(readable, list) and not readable:
-                return [('woow_project_ai_task_id', '=', False)]
-            return ['|', ('woow_project_ai_task_id', '=', False), ('id', 'in', readable)]
-        return ['&', ('woow_project_ai_task_id', '!=', False), ('id', 'not in', readable)]
+            return expression.OR([[('woow_project_ai_task_id', '=', False)]] + [[leaf] for leaf in leaves])
+        return expression.AND([[('woow_project_ai_task_id', '!=', False)]]
+                              + [[('id', 'not in', leaf[2])] for leaf in leaves])
 
     @api.model
     def _woow_project_ai_rule(self):
@@ -262,25 +277,30 @@ class DiscussChannel(models.Model):
         return self.env['res.users'].sudo().browse(self.env.uid).woow_project_ai_readable_rule or dict(NO_CHAT_RULE)
 
     @api.model
-    def _woow_project_ai_readable_value(self):
-        """The task chats the current user may read now, as the value of an
-        ``in`` domain leaf on a channel id: for a system administrator (Odoo
-        lets them read every channel) the compiled sub-query, which PostgreSQL
-        evaluates once per statement, and only when a task chat is met; for
-        anyone else (Odoo lets them read a group chat, and task chats are group
-        chats, only as members) the list of their own readable member task
-        chats, possibly empty: nothing to plan."""
+    def _woow_project_ai_readable_values(self):
+        """The task chats the current user may read now, as values of ``in``
+        domain leaves on a channel id, to be OR-ed in this order: the list of
+        their own readable member task chats (nothing to plan; most reads,
+        administrators' included, stop there: PostgreSQL evaluates the leaves
+        of an OR in order), then, for a system administrator only (Odoo lets
+        them read every channel, others read a group chat only as members, and
+        task chats are group chats), the compiled sub-query of all the task
+        chats they may read, which PostgreSQL evaluates once per statement and
+        only when it meets a task chat that is not in the list."""
         rule = self._woow_project_ai_rule()
-        if not rule.get('admin'):
-            return list(rule.get('ids') or ())
-        to_flush = {}
-        for model_name, field_name in rule.get('flush') or ():
-            to_flush.setdefault(model_name, []).append(field_name)
-        for model_name, field_names in to_flush.items():
-            if model_name in self.env:
-                # the fields the compiled SQL reads, flushed as Odoo flushes a query's fields before running it
-                self.env[model_name].flush_model(field_names)
-        return SQL("(%s)", SQL((rule.get('code') or NO_CHAT_SQL).replace('%', '%%')))
+        values = []
+        if rule.get('ids'):
+            values.append(list(rule['ids']))
+        if rule.get('admin'):
+            to_flush = {}
+            for model_name, field_name in rule.get('flush') or ():
+                to_flush.setdefault(model_name, []).append(field_name)
+            for model_name, field_names in to_flush.items():
+                if model_name in self.env:
+                    # the fields the compiled SQL reads, flushed as Odoo flushes a query's fields before running it
+                    self.env[model_name].flush_model(field_names)
+            values.append(SQL("(%s)", SQL((rule.get('code') or NO_CHAT_SQL).replace('%', '%%'))))
+        return values
 
     @api.model
     def _woow_project_ai_forget_readable(self):
@@ -298,38 +318,29 @@ class DiscussChannel(models.Model):
         their active companies; the internal chat only for employees with
         Project rights who can read the task's project too, and every project
         whose internal text an answer of the chat used (archived ones too).
-        None for public users, inactive users, users who cannot read tasks, or
-        whenever the rules cannot be evaluated for them (task chats stay closed
-        to them; every other channel is unchanged).
+        No chat for public users, inactive users, users who cannot read tasks,
+        or whenever the rules cannot be evaluated for them (task chats stay
+        closed to them; every other channel is unchanged).
 
-        * A system administrator (Odoo's own rule lets them read every
-          channel): {'admin': True, 'code': the SQL of the chats they may read,
-          compiled (their rules in it, the data read at each use), 'flush':
-          [[model, field], ...] it reads}.
-        * Anyone else, who reads a group chat only as a member (Odoo's own
-          rule; task chats are group chats): {'admin': False, 'ids': their
-          member task chats they may read} (one indexed query for their
-          memberships, then, only if they are in a task chat, one for those)."""
+        {'ids': their member task chats they may read (one indexed query for
+        their memberships, then, only if they are in a task chat, one for
+        those), 'admin': False}. A system administrator (Odoo's own rule lets
+        them read every channel) also gets 'admin': True, 'code': the SQL of
+        all the task chats they may read, compiled (their rules in it, the data
+        read at each use) and 'flush': [[model, field], ...] it reads."""
         try:
             if not user or not user.active or user._is_public():
                 return dict(NO_CHAT_RULE)
             admin = user._is_system()
             self.flush_model(['woow_project_ai_task_id', 'woow_project_ai_tab', 'woow_project_ai_brief_project_ids'])
-            if admin:
-                chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel "
-                                     "WHERE woow_project_ai_task_id IS NOT NULL)")
-                member_chats = None
-            else:
-                self.env['discuss.channel.member'].flush_model(['channel_id', 'partner_id'])
-                rows = self.env.execute_query(SQL("""
-                    SELECT c.id FROM discuss_channel_member m
-                      JOIN discuss_channel c ON c.id = m.channel_id AND c.woow_project_ai_task_id IS NOT NULL
-                     WHERE m.partner_id = %s""", user.partner_id.id))
-                member_chats = sorted({row[0] for row in rows})
-                if not member_chats:
-                    return dict(NO_CHAT_RULE)
-                chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel WHERE id = ANY(%s))",
-                                     member_chats)
+            self.env['discuss.channel.member'].flush_model(['channel_id', 'partner_id'])
+            rows = self.env.execute_query(SQL("""
+                SELECT c.id FROM discuss_channel_member m
+                  JOIN discuss_channel c ON c.id = m.channel_id AND c.woow_project_ai_task_id IS NOT NULL
+                 WHERE m.partner_id = %s""", user.partner_id.id))
+            member_chats = sorted({row[0] for row in rows})
+            if not member_chats and not admin:
+                return dict(NO_CHAT_RULE)
             # the user's active companies only: an archived company still in their Allowed Companies would
             # make env.companies (the task rules) raise
             companies = list(user._get_company_ids())
@@ -337,35 +348,47 @@ class DiscussChannel(models.Model):
                 active_test=False, allowed_company_ids=companies)
             if not Task.has_access('read'):
                 return dict(NO_CHAT_RULE)
-            # the user's readable tasks among the tasks of those chats (their rules applied: not sudo)
-            tasks = Task._search([('id', 'in', chats_of_tasks)])
-            domain = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
-            if user._is_internal() and user.has_group(PROJECT_USER_GROUP):
-                # the internal chats: the task's project readable too (its internal text is in the chat)
-                Project = self.env['project.project'].with_user(user).with_context(
-                    active_test=False, allowed_company_ids=companies)
-                projects = Project._search([])
-                # (the task rules are in `tasks` already: not compiled a second time)
-                internal_tasks = Task.sudo()._search([
-                    ('id', 'in', tasks), '|', ('project_id', '=', False), ('project_id', 'in', projects)])
-                domain = ['|'] + domain + [
-                    '&', '&', ('woow_project_ai_tab', '=', TAB_INTERNAL),
-                    ('woow_project_ai_task_id', 'in', internal_tasks),
-                    # ... and every project whose internal text an answer used, archived ones included (no
-                    # active filter): one sub-query PostgreSQL evaluates once, not once per chat
-                    ('id', 'not in', SQL("(SELECT channel_id FROM woow_project_ai_channel_brief_project_rel "
-                                         "WHERE project_id NOT IN (%s))", projects.subselect()))]
-            channels = ['&', ('woow_project_ai_task_id', '!=', False)] + domain
-            if member_chats is not None:
-                channels = ['&', ('id', 'in', member_chats)] + channels
-            # sudo: the rules are in the sub-queries above
-            query = self.sudo().with_context(active_test=False)._search(channels)
-            sql = query.select()
+            internal = user._is_internal() and user.has_group(PROJECT_USER_GROUP)
+            projects = None
+            if internal:
+                projects = self.env['project.project'].with_user(user).with_context(
+                    active_test=False, allowed_company_ids=companies)._search([])
+
+            def readable_chats(chats_of_tasks, restrict_to=None):
+                # the user's readable tasks among the tasks of those chats (their rules applied: not sudo)
+                tasks = Task._search([('id', 'in', chats_of_tasks)])
+                domain = ['&', ('woow_project_ai_tab', '=', TAB_CUSTOMER), ('woow_project_ai_task_id', 'in', tasks)]
+                if internal:
+                    # the internal chats: the task's project readable too (its internal text is in the chat): the
+                    # chats' tasks with such a project, apart from `tasks` (a sub-query of `tasks` would be a
+                    # semi-join of the task rules, which PostgreSQL may plan as a nested loop over all tasks)
+                    project_tasks = Task.sudo()._search([
+                        ('id', 'in', chats_of_tasks), '|', ('project_id', '=', False), ('project_id', 'in', projects)])
+                    domain = ['|'] + domain + [
+                        '&', '&', '&', ('woow_project_ai_tab', '=', TAB_INTERNAL),
+                        ('woow_project_ai_task_id', 'in', tasks), ('woow_project_ai_task_id', 'in', project_tasks),
+                        # ... and every project whose internal text an answer used, archived ones included (no
+                        # active filter): one sub-query PostgreSQL evaluates once, not once per chat
+                        ('id', 'not in', SQL("(SELECT channel_id FROM woow_project_ai_channel_brief_project_rel "
+                                             "WHERE project_id NOT IN %s)", projects.subselect()))]
+                channels = ['&', ('woow_project_ai_task_id', '!=', False)] + domain
+                if restrict_to is not None:
+                    channels = ['&', ('id', 'in', restrict_to)] + channels
+                # sudo: the rules are in the sub-queries above
+                return self.sudo().with_context(active_test=False)._search(channels).select()
+
+            ids = []
+            if member_chats:
+                sql = readable_chats(SQL("(SELECT woow_project_ai_task_id FROM discuss_channel WHERE id = ANY(%s))",
+                                         member_chats), restrict_to=member_chats)
+                ids = sorted(row[0] for row in self.env.execute_query(sql))
             if not admin:
-                return {'admin': False, 'ids': sorted(row[0] for row in self.env.execute_query(sql))}
+                return {'admin': False, 'ids': ids}
+            sql = readable_chats(SQL("(SELECT woow_project_ai_task_id FROM discuss_channel "
+                                     "WHERE woow_project_ai_task_id IS NOT NULL)"))
             flush = {(field.model_name, field.name) for field in sql.to_flush}
             flush.add(('discuss.channel', 'woow_project_ai_brief_project_ids'))  # raw SQL above: not in to_flush
-            return {'admin': True, 'code': self.env.cr.mogrify(sql.code, sql.params).decode(),
+            return {'admin': True, 'ids': ids, 'code': self.env.cr.mogrify(sql.code, sql.params).decode(),
                     'flush': sorted(flush)}
         except psycopg2.Error:
             raise  # the transaction is aborted: swallowing it would only move the failure to the next query
@@ -418,12 +441,16 @@ class DiscussChannel(models.Model):
         administrator: one query for these chats; anyone else: their list)."""
         if not chat_ids:
             return set()
-        readable = self._woow_project_ai_readable_value()
-        if isinstance(readable, list):
-            return set(chat_ids) & set(readable)
-        rows = self.env.execute_query(SQL("SELECT id FROM discuss_channel WHERE id = ANY(%s) AND id IN %s",
-                                          sorted(chat_ids), readable))
-        return {row[0] for row in rows}
+        values = self._woow_project_ai_readable_values()
+        listed = set(values[0]) if values and isinstance(values[0], list) else set()
+        readable = set(chat_ids) & listed
+        others = sorted(set(chat_ids) - listed)
+        compiled = [value for value in values if isinstance(value, SQL)]
+        if others and compiled:
+            rows = self.env.execute_query(SQL("SELECT id FROM discuss_channel WHERE id = ANY(%s) AND id IN %s",
+                                              others, compiled[0]))
+            readable |= {row[0] for row in rows}
+        return readable
 
     # --- Helpers ---
 
@@ -1272,8 +1299,7 @@ class DiscussChannel(models.Model):
             name = parseaddr(message.email_from or '')[0]
             if '@' in name:  # a display name that is an address
                 name = ''
-        name = ' '.join(name.replace('[', '(').replace(']', ')').split())
-        return name[:MAX_AUTHOR_NAME]
+        return one_line_name(name)
 
     def _woow_project_ai_author_role(self, assistant, message):
         """History role of a message: ('user'|'assistant', text prefix) or None to drop it."""

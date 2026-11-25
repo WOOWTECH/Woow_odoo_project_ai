@@ -333,7 +333,7 @@ class TestOpenAiMessages(ProjectAiCase):
         self.assertEqual(payload['user'], someone)
 
     def test_no_conversation_events(self):
-        # no events block in the LiteLLM system message, no "events" key for n8n
+        # no events block in the LiteLLM system message; n8n's "events" key always present (the contract), empty
         chat = self.chat(self.internal)
         self.post(chat, self.internal, 'hi')
         self.assertNotIn('Conversation events', self.body_for(chat)['messages'][0]['content'])
@@ -341,7 +341,7 @@ class TestOpenAiMessages(ProjectAiCase):
         self.post(chat2, self.portal, 'hi')
         with patch(BACKEND_POST, return_value=http_response(200, {'reply': 'ok'})) as post:
             run(self.jobs(chat2))
-        self.assertNotIn('events', json.loads(post.call_args.kwargs['data']))
+        self.assertEqual(json.loads(post.call_args.kwargs['data'])['events'], [])
 
     def test_n8n_user_keeps_email(self):
         chat = self.chat(self.portal, self.n8n)

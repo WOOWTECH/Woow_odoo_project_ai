@@ -14,6 +14,18 @@ AI (`im_livechat_ai`) without sharing anything with them.
 
 [繁體中文說明](README_zh-TW.md)
 
+## Three separate AI products
+
+Since 2026-11-24 discuss AI, project AI and Live Chat AI are three separate
+products. Each has its own runtime core and is downloaded and deployed on
+its own; they share no code and no data.
+
+| Product | Modules | Repository |
+|---|---|---|
+| Discuss AI | `woow_ai_contact`, `woow_ai_contact_portal_discuss` | Gitea `woow-paas/Woow_odoo_discuss_ai` (GitHub mirror `WOOWTECH/Woow_odoo_discuss_ai`) |
+| Project AI (this repository) | `woow_ai_task` and its bridges | Gitea `woow-paas/Woow_odoo_project_ai` (GitHub mirror `WOOWTECH/Woow_odoo_project_ai`) |
+| Live Chat AI | `im_livechat_ai` | GitHub `WOOWTECH/Woow_odoo_ai_livechat` |
+
 | Module | Status | What it does |
 |---|---|---|
 | `woow_ai_task` | 18.0.1.0.0 | Project AI: internal and customer AI chats on every task |
@@ -224,12 +236,14 @@ the module's tables are missing can still be neutralized.
   "Task AI chat file", and its content read through another model is empty,
   also in a request without a user. Settings > Technical > Emails leaves out
   the mails of messages its reader cannot read. The task chats a user may
-  read: for a system administrator a sub-query compiled once per
-  transaction that PostgreSQL evaluates once per statement, and only when a
-  task chat is met; for anyone else the list of their own member task chats
-  they may read, computed once per transaction (one indexed query; again
-  after a join, a leave, a group or an access change). Which channels are
-  task chats is kept per process for channels that exist only.
+  read: the list of their own member task chats they may read, computed
+  once per transaction (one indexed query, one more when they are in task
+  chats; again after a join, a leave, a group or an access change); for a
+  system administrator (who reads chats without being a member) also, after
+  that list, a sub-query compiled once per transaction that PostgreSQL
+  evaluates once per statement, and only when it meets a task chat not in
+  the list. Which channels are task chats is kept per process for channels
+  that exist only.
 - Links, checked on the rows as stored (any id type, any command shape;
   superuser included unless Odoo itself needs it): no message anywhere gets a
   task chat message as its parent unless it is in that chat; a task chat's

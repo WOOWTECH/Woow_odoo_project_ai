@@ -276,10 +276,9 @@ class MailMessage(models.Model):
         exclusion = ['|', ('model', '!=', 'discuss.channel'), ('res_id', 'not in', SQL(
             "(SELECT woow_c.id FROM discuss_channel woow_c WHERE woow_c.id = %s "
             "AND woow_c.woow_project_ai_task_id IS NOT NULL)", SQL.identifier(self._table, 'res_id')))]
-        readable = Channel._woow_project_ai_readable_value()
-        if isinstance(readable, list) and not readable:
-            return exclusion
-        return ['|'] + exclusion + [('res_id', 'in', readable)]
+        # (then their readable member chats; for a system administrator, last, all the task chats they may read)
+        return expression.OR([exclusion] + [[('res_id', 'in', value)]
+                                            for value in Channel._woow_project_ai_readable_values()])
 
     @api.depends('record_name', 'model', 'res_id')
     @api.depends_context('uid', 'lang')

@@ -113,7 +113,7 @@ class TestAiAssistant(ProjectAiCase):
         self.assertEqual(params['type'], 'danger')
         # the connection form shows Test Connection for n8n without a secret, never for LiteLLM without a key
         arch = self.env['woow.project.ai.connection'].get_view(view_type='form')['arch']
-        self.assertIn("(backend_type == 'openai' and not api_key_set)", arch)
+        self.assertIn("(backend_type == 'openai' and (not api_key_set or not model))", arch)
 
     def test_test_connection_admin_only(self):
         with self.assertRaises(AccessError):

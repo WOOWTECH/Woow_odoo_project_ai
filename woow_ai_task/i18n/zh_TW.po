@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 22:47+0000\n"
-"PO-Revision-Date: 2026-11-24 22:47+0000\n"
+"POT-Creation-Date: 2026-11-25 01:41+0000\n"
+"PO-Revision-Date: 2026-11-25 01:41+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -563,7 +563,7 @@ msgstr "客戶 AI 對話：在這個時間之前 AI 不回覆（同事發言了�
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_project_project__woow_project_ai_customer_welcome
 msgid "Customer Tab Welcome Message"
-msgstr "客戶分頁歡迎詞"
+msgstr "客戶分頁歡迎訊息"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -661,11 +661,6 @@ msgstr ""
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
 msgid "Empty: Sorry, I cannot answer right now. Please try again later."
 msgstr "留空：抱歉，我現在無法回覆，請稍後再試。"
-
-#. module: woow_ai_task
-#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
-msgid "Empty: backend default"
-msgstr "留空：使用後端預設"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__endpoint_url
@@ -945,6 +940,12 @@ msgstr "它的 AI 連線沒有 API 金鑰。"
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_project.py:0
+msgid "Its AI connection has no LiteLLM model name."
+msgstr "它的 AI 連線沒有 LiteLLM 模型名稱。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_project.py:0
 msgid "Its AI connection has no endpoint URL."
 msgstr "它的 AI 連線沒有後端網址。"
 
@@ -1055,9 +1056,17 @@ msgid "LiteLLM connections are chat-only: they are always safe for customers."
 msgstr "LiteLLM 連線只對話：一律可給客戶使用。"
 
 #. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
+msgid "LiteLLM model name"
+msgstr "LiteLLM 模型名稱"
+
+#. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__model
-msgid "LiteLLM only. Leave empty to use the backend default."
-msgstr "只用於 LiteLLM。留空則使用後端預設模型。"
+msgid ""
+"LiteLLM only (required): the LiteLLM model name, which picks the deployment."
+" A LiteLLM connection without one is not ready and fails Test Connection."
+msgstr ""
+"僅限 LiteLLM（必填）：LiteLLM 的模型名稱，LiteLLM 依它選擇部署。沒有模型的 LiteLLM 連線是「未就緒」，測試連線也會失敗。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__openai_stream
@@ -1828,6 +1837,12 @@ msgstr "請設定 API 金鑰：LiteLLM 連線需要金鑰。"
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
+msgid "Set the LiteLLM model name first."
+msgstr "請先設定 LiteLLM 模型名稱。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "Set the endpoint URL and the API key first."
 msgstr "請先設定後端網址與 API 金鑰。"
 
@@ -1842,6 +1857,12 @@ msgstr "請先設定後端網址。"
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "Set the endpoint URL."
 msgstr "請設定後端網址。"
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ai_connection.py:0
+msgid "Set the model: LiteLLM picks the deployment by its name."
+msgstr "請設定模型：LiteLLM 依模型名稱選擇部署。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_assistant_form
@@ -2186,7 +2207,7 @@ msgstr "逾時秒數必須介於 5 到 3600 秒之間。"
 msgid ""
 "The welcome message of the customer AI chat is a project setting (the project's\n"
 "                                \"AI Assistants\" page)."
-msgstr "客戶 AI 對話的歡迎詞是專案的設定（在專案的「AI 助理」頁）。"
+msgstr "客戶 AI 對話的歡迎訊息是專案的設定（在專案的「AI 助理」頁）。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2265,12 +2286,13 @@ msgstr "總 Token 數"
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__timeout_seconds
 msgid ""
-"Total time allowed for one answer (5-3600 seconds). n8n: at most 90 seconds "
-"per call (Cloudflare cuts at about 100 seconds; long workflows answer "
-"{\"skip\": true} and push the reply later)."
+"Total time allowed for one answer, retries included (5-3600 seconds; 300 by "
+"default, 120 for a new n8n connection). n8n: an answer waits at most 300 "
+"seconds (a long workflow uses an in-cluster URL, or answers {\"skip\": true}"
+" and pushes the reply later)."
 msgstr ""
-"一次回覆的總時限（5–3600 秒）。n8n：每次呼叫最多 90 秒（Cloudflare 約 100 秒會切斷；長流程請先回 {\"skip\": "
-"true}，再用推送 API 回覆）。"
+"一次回答可用的總時間，包含重試（5–3600 秒；預設 300，新的 n8n 連線為 120）。n8n：一次回答最多等 300 "
+"秒（較長的流程請用叢集內網址，或先回 {\"skip\": true}、之後再推送回覆）。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_job__message_id

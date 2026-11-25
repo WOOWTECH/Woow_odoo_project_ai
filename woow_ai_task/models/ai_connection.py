@@ -38,6 +38,7 @@ from .ai_assistant_backend import CONNECT_TIMEOUT, TEST_TIMEOUT, _json_dumps, _s
 _logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300
+DEFAULT_N8N_TIMEOUT = 120  # a new n8n connection's timeout (create and onchange)
 MAX_TIMEOUT = 3600
 DEFAULT_MAX_DOWNLOAD_MB = 20
 MAX_DOWNLOAD_MB = 100
@@ -113,12 +114,13 @@ class WoowProjectAiConnection(models.Model):
     )
     api_key_set = fields.Boolean(string='API Key Configured', compute='_compute_api_key')
     model = fields.Char(string='Model',
-                        help='LiteLLM only. Leave empty to use the backend default.')
+                        help='LiteLLM only (required): the LiteLLM model name, which picks the deployment. A '
+                             'LiteLLM connection without one is not ready and fails Test Connection.')
     timeout_seconds = fields.Integer(
         string='Timeout (seconds)', default=DEFAULT_TIMEOUT,
-        help='Total time allowed for one answer (5-3600 seconds). n8n: at most 90 seconds per call '
-             '(Cloudflare cuts at about 100 seconds; long workflows answer {"skip": true} and push the '
-             'reply later).')
+        help='Total time allowed for one answer, retries included (5-3600 seconds; 300 by default, 120 for a '
+             'new n8n connection). n8n: an answer waits at most 300 seconds (a long workflow uses an '
+             'in-cluster URL, or answers {"skip": true} and pushes the reply later).')
     openai_stream = fields.Boolean(
         string='Stream Replies', default=True,
         help='LiteLLM only: ask for a streamed (SSE) answer. Bytes keep flowing while the backend works, so '
@@ -225,7 +227,7 @@ class WoowProjectAiConnection(models.Model):
 
     # --- Readiness ---
 
-    @api.depends('active', 'backend_type', 'endpoint_url', 'api_key')
+    @api.depends('active', 'backend_type', 'endpoint_url', 'api_key', 'model')
     def _compute_readiness(self):
         keys = self._get_api_keys()
         _ = self.env._
@@ -238,6 +240,8 @@ class WoowProjectAiConnection(models.Model):
                 reasons.append(_('Set the endpoint URL.'))
             if connection.backend_type == BACKEND_LITELLM and not has_key:
                 reasons.append(_('Set the API key: LiteLLM connections need one.'))
+            if connection.backend_type == BACKEND_LITELLM and not (connection.model or '').strip():
+                reasons.append(_('Set the model: LiteLLM picks the deployment by its name.'))
             connection.readiness = READINESS_BLOCKED if reasons else READINESS_OK
             connection.readiness_reason = '\n'.join(reasons) if reasons else _('Ready to use.')
 
@@ -249,7 +253,8 @@ class WoowProjectAiConnection(models.Model):
             SELECT id FROM woow_project_ai_connection
              WHERE active AND COALESCE(btrim(endpoint_url), '') <> ''
                AND (backend_type <> %s OR COALESCE(api_key_secret, '') <> '')
-        """, (BACKEND_LITELLM,))
+               AND (backend_type <> %s OR COALESCE(btrim(model), '') <> '')
+        """, (BACKEND_LITELLM, BACKEND_LITELLM))
         ready_ids = [row[0] for row in self.env.cr.fetchall()]
         wants_ready = (operator == '=') == (value == READINESS_OK)
         return [('id', 'in' if wants_ready else 'not in', ready_ids)]
@@ -309,6 +314,16 @@ class WoowProjectAiConnection(models.Model):
         return 'endpoint_url' in vals \
             and (vals['endpoint_url'] or '').strip() != (connection.endpoint_url or '').strip()
 
+    @api.onchange('backend_type')
+    def _onchange_backend_type_timeout(self):
+        # the form fills in the field default (300): switching to n8n while it is still that default gives n8n's,
+        # and back
+        for connection in self:
+            if connection.backend_type == BACKEND_N8N and connection.timeout_seconds == DEFAULT_TIMEOUT:
+                connection.timeout_seconds = DEFAULT_N8N_TIMEOUT
+            elif connection.backend_type == BACKEND_LITELLM and connection.timeout_seconds == DEFAULT_N8N_TIMEOUT:
+                connection.timeout_seconds = DEFAULT_TIMEOUT
+
     @api.onchange('backend_type', 'endpoint_url')
     def _onchange_customer_safe(self):
         # the form shows what saving does (write())
@@ -325,6 +340,8 @@ class WoowProjectAiConnection(models.Model):
         for vals in vals_list:
             if vals.get('backend_type', BACKEND_LITELLM) == BACKEND_LITELLM:
                 vals['customer_safe'] = True
+            elif 'timeout_seconds' not in vals:
+                vals['timeout_seconds'] = DEFAULT_N8N_TIMEOUT
         return super().create(vals_list)
 
     def write(self, vals):
@@ -390,6 +407,8 @@ class WoowProjectAiConnection(models.Model):
             message, ok = _('Set the endpoint URL first.'), False
         elif not endpoint or (connection.backend_type == BACKEND_LITELLM and not api_key):
             message, ok = _('Set the endpoint URL and the API key first.'), False
+        elif connection.backend_type == BACKEND_LITELLM and not (connection.model or '').strip():
+            message, ok = _('Set the LiteLLM model name first.'), False
         else:
             try:
                 if connection.backend_type == BACKEND_LITELLM:

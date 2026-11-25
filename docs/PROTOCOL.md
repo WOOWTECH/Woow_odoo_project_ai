@@ -54,8 +54,10 @@ of one task and one tab) and carries:
   - customer chat: `[客戶 <name>] ` for a portal user, `[負責同事 <name>] ` for an
     employee, `[其他 <name>] ` otherwise. Only the label's first word tells
     the kind of account; the system prompt says so.
-  Names: `[` `]` become `(` `)`, at most 80 characters, never an email. Text
-  is cut at 16,000 characters (`…[truncated]`).
+  Names are one cleaned line, here and in the identity block: NFKC, white
+  space collapsed, no other control or format character, runs of three or
+  more `<` or `>` as one, `[` `]` as `(` `)`, at most 80 characters, never an
+  email. Text is cut at 16,000 characters (`…[truncated]`).
 - **system prompt**: the assistant's prompt, the project text of this tab
   (`專案說明（專案經理提供）：` + text; the customer chat never gets the internal
   one), a task summary read with the asker's own access rights (internal
@@ -81,8 +83,9 @@ of one task and one tab) and carries:
  "lang": "zh_TW", "tz": "Asia/Taipei", "is_portal": true, "company_id": 1}
 ```
 
-  n8n gets it as `user`. LiteLLM's model sees an identity block in the system
-  message without the email; `metadata` repeats the identity (`odoo_*`).
+  n8n gets it as `user` (the only place the email goes). LiteLLM's model sees
+  an identity block in the system message without the email; `metadata`
+  repeats the identity (`odoo_*`) without the email too.
 - **attachments** as `ATT` objects with a signed download link valid one hour:
 
 ```json
@@ -104,17 +107,19 @@ further comment; customer messages written meanwhile are not answered later.
 
 ### Timeouts and retries
 
-- Connect timeout 10 s. LiteLLM with *Stream Replies* (default): fails when
-  no byte arrives for 30 s, or when the whole answer takes longer than the
-  connection's *Timeout* (default 300 s). n8n: at most 90 s per call (behind
-  Cloudflare, which cuts at about 100 s): long workflows answer
-  `{"skip": true}` and push the reply.
+- *Timeout* is the total time for one answer, retries included (5–3600 s,
+  default 300 s; a new n8n connection gets 120 s). Connect timeout 10 s.
+  LiteLLM with *Stream Replies* (default): fails when no byte arrives for
+  30 s, or when the whole answer takes longer than the timeout. n8n: an
+  answer waits at most 300 s; a long workflow uses an in-cluster URL, or
+  answers `{"skip": true}` and pushes the reply.
 - *Retries* (0–2, default 1) only when the connection could not be opened or
   the backend answered HTTP 429 / 503, after 3 s and 10 s. Never after the
   request was sent (read timeout, reset, 5xx): the backend may already be
   working on it. Redirects are never followed (a 3xx is an error).
 - A failure posts the assistant's error message and is kept in the call log
-  (status, HTTP code, duration; never the upstream body). So does a question
+  (status, HTTP code, duration, a fixed text or the exception's type name;
+  never the upstream body nor an exception's text). So does a question
   that waited more than 30 minutes for its turn. In the customer chat both
   also schedule the colleagues' To-Do (an open one is reused).
 - A file of a reply that cannot be read (network, TLS, a body cut short, a
@@ -146,14 +151,15 @@ Accept: text/event-stream
   "user": "woow-project-ai-0edfec80-42",
   "metadata": {"session_id": "woow-project-ai-0edfec80-42", "surface_type": "project_task",
                "surface_project_id": "7", "surface_task_id": "42", "surface_tab": "customer",
-               "odoo_user_id": "7", "odoo_partner_id": "15", "odoo_name": "王小明", "odoo_email": "user@example.com",
+               "odoo_user_id": "7", "odoo_partner_id": "15", "odoo_name": "王小明",
                "odoo_lang": "zh_TW", "odoo_tz": "Asia/Taipei", "odoo_is_portal": "true", "odoo_company_id": "1"},
   "stream": true,
   "stream_options": {"include_usage": true}
 }
 ```
 
-- `model` only when the connection has one. No `tools`, ever.
+- `model`: required (a LiteLLM connection without one is not ready and fails
+  *Test Connection*). No `tools`, ever.
 - `messages` start and end with a `user` turn: AI messages before the first
   question (the welcome message) are dropped; AI messages after the last
   question (pushes, errors) are moved before it.
@@ -197,6 +203,7 @@ X-Woow-Signature: sha256=5d2b…
   "system_prompt": "專案說明（專案經理提供）：…",
   "message": {"id": 991, "text": "[客戶 王小明] 幫我看這份報價", "attachments": [ATT]},
   "history": [{"role": "assistant", "text": "您好，我是客戶 AI 助理。", "attachments": []}],
+  "events": [],
   "action": "sendMessage",
   "sessionId": "woow-project-ai-0edfec80-42",
   "chatInput": "[客戶 王小明] 幫我看這份報價"
@@ -204,11 +211,13 @@ X-Woow-Signature: sha256=5d2b…
 ```
 
 - `message` is the question being answered, `history` the earlier context.
+  `events` is always present (the contract's key) and empty: task chats have
+  no events.
   `action` / `sessionId` / `chatInput` are what an n8n Chat Trigger reads.
 - Verify the signature on the **raw body**: `sha256=` + hex
   HMAC-SHA256(secret, `"<X-Woow-Timestamp>.<raw body>"`); reject timestamps
   more than 300 s away; compare in constant time; answer 401 when it fails.
-- Answer HTTP 200 with JSON within 90 s:
+- Answer HTTP 200 with JSON within the connection's timeout (at most 300 s):
   - `{"reply": {"text": "markdown", "attachments": [{"name": "…", "data_base64": "…"} | {"name": "…", "url": "https://…"}]}}`
   - `{"replies": [{"text": "…"}, …]}` (at most 10 messages)
   - `{"output": "markdown"}` (n8n AI Agent / Chat Trigger)
@@ -234,7 +243,8 @@ X-Woow-Signature: sha256=5d2b…
 
 Markdown (paragraphs, bold / italic / strike, code, headings, lists, quotes,
 GFM tables) rendered to safe HTML; HTML in the reply is shown as text; only
-`http`, `https` and `mailto` links. Images and file links whose host is in
+`http`, `https` and `mailto` links, and none with a backslash or a user name
+(`user@`) before its host (those stay text). Images and file links whose host is in
 the connection's *Download Domains* are downloaded (https; size limit *Max
 File Size*, default 20 MB; no redirect outside the list) and attached; other
 links stay links. `data:image/…;base64` URIs in the text are attached without

@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-24 22:47+0000\n"
-"PO-Revision-Date: 2026-11-24 22:47+0000\n"
+"POT-Creation-Date: 2026-11-25 01:41+0000\n"
+"PO-Revision-Date: 2026-11-25 01:41+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -659,11 +659,6 @@ msgid "Empty: Sorry, I cannot answer right now. Please try again later."
 msgstr ""
 
 #. module: woow_ai_task
-#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
-msgid "Empty: backend default"
-msgstr ""
-
-#. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_connection__endpoint_url
 msgid "Endpoint URL"
 msgstr ""
@@ -938,6 +933,12 @@ msgstr ""
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/project_project.py:0
+msgid "Its AI connection has no LiteLLM model name."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/project_project.py:0
 msgid "Its AI connection has no endpoint URL."
 msgstr ""
 
@@ -1045,8 +1046,15 @@ msgid "LiteLLM connections are chat-only: they are always safe for customers."
 msgstr ""
 
 #. module: woow_ai_task
+#: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_connection_form
+msgid "LiteLLM model name"
+msgstr ""
+
+#. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__model
-msgid "LiteLLM only. Leave empty to use the backend default."
+msgid ""
+"LiteLLM only (required): the LiteLLM model name, which picks the deployment."
+" A LiteLLM connection without one is not ready and fails Test Connection."
 msgstr ""
 
 #. module: woow_ai_task
@@ -1790,6 +1798,12 @@ msgstr ""
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
+msgid "Set the LiteLLM model name first."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "Set the endpoint URL and the API key first."
 msgstr ""
 
@@ -1803,6 +1817,12 @@ msgstr ""
 #. odoo-python
 #: code:addons/woow_ai_task/models/ai_connection.py:0
 msgid "Set the endpoint URL."
+msgstr ""
+
+#. module: woow_ai_task
+#. odoo-python
+#: code:addons/woow_ai_task/models/ai_connection.py:0
+msgid "Set the model: LiteLLM picks the deployment by its name."
 msgstr ""
 
 #. module: woow_ai_task
@@ -2221,9 +2241,10 @@ msgstr ""
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_woow_project_ai_connection__timeout_seconds
 msgid ""
-"Total time allowed for one answer (5-3600 seconds). n8n: at most 90 seconds "
-"per call (Cloudflare cuts at about 100 seconds; long workflows answer "
-"{\"skip\": true} and push the reply later)."
+"Total time allowed for one answer, retries included (5-3600 seconds; 300 by "
+"default, 120 for a new n8n connection). n8n: an answer waits at most 300 "
+"seconds (a long workflow uses an in-cluster URL, or answers {\"skip\": true}"
+" and pushes the reply later)."
 msgstr ""
 
 #. module: woow_ai_task

@@ -69,12 +69,13 @@ class TestOpenAiJob(ProjectAiCase):
         uuid = self.env['ir.config_parameter'].sudo().get_param('database.uuid').replace('-', '')[:8]
         self.assertEqual(session_id, 'woow-project-ai-%s-%s' % (uuid, chat.id))
         self.assertNotIn(':', session_id)
-        # metadata: flat, string values only (OpenAI API rule); email kept there
+        # metadata: flat, string values only (OpenAI API rule); never the email (the contract: only n8n gets it)
         metadata = body['metadata']
         self.assertTrue(all(isinstance(k, str) and isinstance(v, str) for k, v in metadata.items()))
         self.assertEqual(metadata['session_id'], session_id)
         self.assertEqual(metadata['odoo_user_id'], str(self.internal.id))
-        self.assertEqual(metadata['odoo_email'], 'sam@example.com')
+        self.assertNotIn('odoo_email', metadata)
+        self.assertNotIn('sam@example.com', json.dumps(metadata))
         self.assertEqual(metadata['odoo_is_portal'], 'false')
         # system: the prompt, then the identity block the model can see (no email)
         system = body['messages'][0]
@@ -92,17 +93,25 @@ class TestOpenAiJob(ProjectAiCase):
         self.assertFalse(log.request_payload)
         self.assertFalse(log.response_payload)
 
-    def test_optional_model_and_prompt(self):
+    def test_model_required_and_optional_prompt(self):
+        # the LiteLLM model is required (the contract): without one the connection is not ready, nothing is queued
         self.connection.model = False
-        self.assistant.system_prompt = False
+        self.assertEqual(self.connection.readiness, 'blocked')
         chat = self.chat(self.portal)
-        self.post(chat, self.portal, 'hi')
+        with patch(BACKEND_POST) as post:
+            self.post(chat, self.portal, 'hi')
+            self.assertFalse(self.jobs(chat))
+        post.assert_not_called()
+        self.connection.model = 'test-model'
+        self.assistant.system_prompt = False
+        self.post(chat, self.portal, 'hi again')
         with patch(BACKEND_POST, return_value=openai_ok()) as post:
-            run(self.jobs(chat))
+            run(self.jobs(chat)[-1])
         body = json.loads(post.call_args.kwargs['data'])
-        self.assertNotIn('model', body)
+        self.assertEqual(body['model'], 'test-model')
         # no prompt: the system message starts with the project text of the tab, the identity block last
-        self.assertEqual([m['role'] for m in body['messages']], ['system', 'user'])
+        self.assertEqual([m['role'] for m in body['messages']][:2], ['system', 'user'])
+        self.assertEqual({m['role'] for m in body['messages'][1:]}, {'user'})
         self.assertTrue(body['messages'][0]['content'].startswith('專案說明（專案經理提供）：\nCUSTOMER BRIEF'))
         self.assertIn('You are chatting in Odoo', body['messages'][0]['content'])
         self.assertIn('- account: portal user', body['messages'][0]['content'])
@@ -403,8 +412,8 @@ class TestN8nJob(ProjectAiCase):
         self.assertNotIn(TEST_KEY, json.dumps(headers))
         self.assertNotIn(TEST_KEY.encode(), kwargs['data'])
         self.assertFalse(kwargs['stream'])
-        # n8n: at most 90 s per call (im_livechat_ai 18.0.1.2.0; Cloudflare cuts at about 100 s)
-        self.assertEqual(kwargs['timeout'], (10, 90))
+        # n8n: a new connection's timeout, 120 s (the contract; an answer waits at most 300 s)
+        self.assertEqual(kwargs['timeout'], (10, 120))
         expected = hmac.new(TEST_KEY.encode(), headers['X-Woow-Timestamp'].encode() + b'.' + kwargs['data'],
                             hashlib.sha256).hexdigest()
         self.assertEqual(headers['X-Woow-Signature'], 'sha256=%s' % expected)
@@ -439,7 +448,8 @@ class TestN8nJob(ProjectAiCase):
             run(self.jobs(chat)[-1])
         body = json.loads(post.call_args.kwargs['data'])
         self.assertEqual(set(body), {'event', 'session_id', 'action', 'sessionId', 'chatInput', 'assistant', 'user',
-                                     'channel', 'surface', 'system_prompt', 'message', 'history'})
+                                     'channel', 'surface', 'system_prompt', 'message', 'history', 'events'})
+        self.assertEqual(body['events'], [])
         # the portal user follows the task, not the project: no project in the surface (team review 34)
         self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': None,
                                            'task_id': self.task.id, 'tab': 'customer'})
@@ -451,13 +461,13 @@ class TestN8nJob(ProjectAiCase):
                          [('assistant', '您好，我是客戶 AI 助理。'), ('user', '[客戶 Customer Carl] q1'),
                           ('assistant', 'a1')])
 
-    def test_timeout_capped_at_90_seconds(self):
+    def test_timeout_capped_at_300_seconds(self):
         self.n8n_connection.timeout_seconds = 30
         _chat, _job, post = self.run_n8n({'reply': 'ok'})
         self.assertEqual(post.call_args.kwargs['timeout'], (10, 30))
         self.n8n_connection.timeout_seconds = 600
         _chat, _job, post = self.run_n8n({'reply': 'ok'}, user=self.internal)
-        self.assertEqual(post.call_args.kwargs['timeout'], (10, 90))
+        self.assertEqual(post.call_args.kwargs['timeout'], (10, 300))
 
     def test_unsigned_without_signing_secret(self):
         # a public n8n Chat Trigger checks no signature: no secret, no X-Woow-* headers

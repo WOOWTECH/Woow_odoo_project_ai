@@ -28,7 +28,7 @@
                             invisible="not api_key_set" class="btn-secondary"
                             confirm="Remove the saved backend API key?"/>
                     <button name="action_test_connection" type="object" string="Test Connection"
-                            invisible="not id or not endpoint_url or (backend_type == 'openai' and not api_key_set)"
+                            invisible="not id or not endpoint_url or (backend_type == 'openai' and (not api_key_set or not model))"
                             class="btn-secondary"/>
                 </header>
                 <sheet>
@@ -80,7 +80,7 @@
                                            placeholder="Optional. Leave empty to keep the current secret"/>
                                     <field name="api_key_set"/>
                                     <field name="model" invisible="backend_type != 'openai'"
-                                           placeholder="Empty: backend default"/>
+                                           placeholder="LiteLLM model name"/>
                                 </group>
                                 <group>
                                     <field name="timeout_seconds"/>

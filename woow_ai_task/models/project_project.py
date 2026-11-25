@@ -183,6 +183,8 @@ class ProjectProject(models.Model):
                     details.append('connection_no_url')
                 if connection.backend_type == 'openai' and not connection.api_key_set:
                     details.append('connection_no_key')
+                if connection.backend_type == 'openai' and not (connection.model or '').strip():
+                    details.append('connection_no_model')
             problems += details or ['connection_not_ready']
         if tab == TAB_CUSTOMER and not connection.customer_safe:
             problems.append('not_customer_safe')
@@ -199,6 +201,7 @@ class ProjectProject(models.Model):
             'connection_archived': _('Its AI connection is archived.'),
             'connection_no_url': _('Its AI connection has no endpoint URL.'),
             'connection_no_key': _('Its AI connection has no API key.'),
+            'connection_no_model': _('Its AI connection has no LiteLLM model name.'),
             'connection_not_ready': _('Its AI connection is not ready.'),
             'not_customer_safe': _('Its AI connection is not marked "Safe for Customers": the customer chats get a '
                                    'short notice instead of an answer.'),

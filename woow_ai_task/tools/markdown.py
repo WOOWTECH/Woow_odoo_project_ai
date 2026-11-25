@@ -25,6 +25,7 @@ Supported (enough for chat replies, see docs/DESIGN.md "回覆呈現"):
 
 import re
 from contextvars import ContextVar
+from urllib.parse import urlsplit
 
 from markupsafe import Markup, escape
 
@@ -67,9 +68,17 @@ _LINK_HOSTS = ContextVar('woow_ai_task_link_hosts', default=None)
 def safe_url(url):
     """Return the URL when its scheme is allowed (http, https, mailto), else None."""
     url = (url or '').strip()
-    if url.lower().startswith(ALLOWED_SCHEMES) and not any(c in url for c in '\r\n\t'):
-        return url
-    return None
+    if not url.lower().startswith(ALLOWED_SCHEMES) or any(c in url for c in '\r\n\t'):
+        return None
+    # A backslash is a path separator for browsers but not for urlsplit, and userinfo ("@") hides the real host:
+    # both make the host list (_LINK_HOSTS, download domains) disagree with where the browser goes
+    try:
+        netloc = urlsplit(url).netloc
+    except ValueError:
+        return None
+    if '\\' in url or '@' in netloc:
+        return None
+    return url
 
 
 def _emphasis(escaped):

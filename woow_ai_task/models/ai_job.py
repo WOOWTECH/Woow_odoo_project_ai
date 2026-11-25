@@ -768,7 +768,8 @@ class WoowProjectAiJob(models.Model):
             self.env.invalidate_all()
             try:
                 if self.exists() and self.state in ('pending', 'running'):
-                    vals = {'error': ('%s: %s' % (type(e).__name__, e))[:MAX_JOB_ERROR_LENGTH]}
+                    # the type name only: an exception's text may carry an address or an upstream answer
+                    vals = {'error': type(e).__name__[:MAX_JOB_ERROR_LENGTH]}
                     if self.state == 'pending':
                         # not claimed yet: do not pick it again at once (a 'running'
                         # one waits STALE_RUNNING_SECONDS anyway)
