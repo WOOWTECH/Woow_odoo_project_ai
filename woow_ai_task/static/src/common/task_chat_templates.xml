@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <!-- Task AI conversations: members follow the task access, so the member panel offers no invitation.
+         The button is wrapped (not given a t-if of its own): another module that sets the button's t-if
+         (woow_odoo_portal_discuss does, on the public page) keeps its condition, in whatever order the
+         extensions apply, and this one still holds. -->
+    <t t-inherit="discuss.ChannelMemberList" t-inherit-mode="extension">
+        <xpath expr="//button[contains(@t-on-click, 'openChannelInvitePanel')]" position="replace">
+            <t t-if="!props.thread.woow_project_ai_tab">$0</t>
+        </xpath>
+    </t>
+    <!-- ... and the task manages the conversation's avatar (members change only the name and description);
+         Odoo's own condition on the uploader stays as it is -->
+    <t t-inherit="mail.Discuss" t-inherit-mode="extension">
+        <xpath expr="//FileUploader" position="replace">
+            <t t-if="!thread.woow_project_ai_tab">$0</t>
+        </xpath>
+    </t>
+</templates>

@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_woow_project_ai_assistant_list" model="ir.ui.view">
+        <field name="name">woow.project.ai.assistant.list</field>
+        <field name="model">woow.project.ai.assistant</field>
+        <field name="arch" type="xml">
+            <list string="AI Assistants">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="description" optional="show"/>
+                <field name="connection_id"/>
+                <field name="customer_safe" optional="show"/>
+                <field name="push_key_hint" string="Push Key" optional="show"/>
+                <field name="active" column_invisible="True"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_woow_project_ai_assistant_form" model="ir.ui.view">
+        <field name="name">woow.project.ai.assistant.form</field>
+        <field name="model">woow.project.ai.assistant</field>
+        <field name="arch" type="xml">
+            <form string="AI Assistant">
+                <header groups="base.group_system">
+                    <button name="action_generate_push_key" type="object" string="Generate Push Key"
+                            invisible="not id" class="btn-secondary"
+                            confirm="A new push key replaces the current one. Continue?"/>
+                    <button name="action_revoke_push_key" type="object" string="Revoke Push Key"
+                            invisible="not push_key_hint" class="btn-secondary"
+                            confirm="Revoke the push key? Pushes with it will be refused."/>
+                    <button name="action_test_connection" type="object" string="Test Connection"
+                            invisible="not id or not connection_id" class="btn-secondary"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box" groups="base.group_system">
+                        <button name="action_view_call_logs" type="object" class="oe_stat_button" icon="fa-list-alt"
+                                invisible="not id">
+                            <field name="call_log_count" widget="statinfo" string="Call Logs"/>
+                        </button>
+                        <button name="action_open_bot_partner" type="object" class="oe_stat_button" icon="fa-user"
+                                string="Bot Partner" invisible="not partner_id"/>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                    <field name="image_1920" widget="image" class="oe_avatar" options="{'preview_image': 'image_128'}"/>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" placeholder="e.g. Renovation Advisor"/></h1>
+                    </div>
+                    <group>
+                        <field name="description" placeholder="Shown to project managers when they choose the AI assistants"/>
+                        <field name="connection_id" groups="base.group_system"
+                               placeholder="Where the brain is: pick or create an AI connection"/>
+                        <field name="customer_safe"/>
+                        <field name="partner_id" readonly="1" invisible="not partner_id"/>
+                        <field name="active" invisible="1"/>
+                    </group>
+                    <notebook groups="base.group_system">
+                        <page string="Conversation" name="backend">
+                            <group>
+                                <group>
+                                    <field name="max_history"/>
+                                </group>
+                                <group>
+                                    <div class="text-muted" colspan="2">
+                                        The backend type, URL, key, model, timeouts, documents and files of replies
+                                        are settings of the AI connection.
+                                    </div>
+                                </group>
+                            </group>
+                            <group string="System Prompt">
+                                <field name="system_prompt" nolabel="1" colspan="2"
+                                       placeholder="Optional. Leave empty to let the backend decide the role."/>
+                            </group>
+                            <group string="Reply Processing" name="job_runner">
+                                <field name="job_runner_warning" invisible="1"/>
+                                <div colspan="2" class="alert alert-warning mb-2" role="alert"
+                                     invisible="not job_runner_warning">
+                                    Replies are not processed by the cron runner on this server: see below.
+                                </div>
+                                <field name="job_runner_info" nolabel="1" colspan="2" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Messages" name="messages">
+                            <group>
+                                <field name="error_message" placeholder="Empty: Sorry, I cannot answer right now. Please try again later."/>
+                            </group>
+                            <div class="text-muted">
+                                The welcome message of the customer AI chat is a project setting (the project's
+                                "AI Assistants" page).
+                            </div>
+                        </page>
+                        <page string="Projects" name="projects">
+                            <field name="project_ids" nolabel="1" readonly="1">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="woow_project_ai_internal_assistant_id" string="Internal"/>
+                                    <field name="woow_project_ai_customer_assistant_id" string="Customer"/>
+                                </list>
+                            </field>
+                            <div class="text-muted">
+                                Project managers choose the AI assistants of their projects (the project's
+                                "AI Assistants" page): one for the internal AI chat of every task, one for the
+                                customer AI chat (only assistants whose AI connection is safe for customers).
+                            </div>
+                        </page>
+                        <page string="Push API" name="push">
+                            <group>
+                                <field name="push_key_hint" string="Current Push Key"/>
+                            </group>
+                            <div class="text-muted">
+                                POST /woow_project_ai/v1/push with "Authorization: Bearer &lt;push key&gt;" lets a
+                                backend post a later reply as this AI assistant into a task AI chat it answers
+                                ({"to": {"channel_id": …}}). The key is shown once when generated; only its hash is
+                                stored. See docs/PROTOCOL.md.
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_woow_project_ai_assistant_search" model="ir.ui.view">
+        <field name="name">woow.project.ai.assistant.search</field>
+        <field name="model">woow.project.ai.assistant</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="connection_id" groups="base.group_system"/>
+                <filter name="customer_safe" string="Safe for Customers" domain="[('customer_safe', '=', True)]"/>
+                <filter name="archived" string="Archived" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_connection" string="AI Connection" context="{'group_by': 'connection_id'}"
+                            groups="base.group_system"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_woow_project_ai_assistant" model="ir.actions.act_window">
+        <field name="name">AI Assistants</field>
+        <field name="res_model">woow.project.ai.assistant</field>
+        <field name="view_mode">list,form</field>
+        <field name="groups_id" eval="[Command.set([ref('base.group_system')])]"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Create an AI assistant</p>
+            <p>Project managers choose AI assistants for the internal and the customer AI chats of their projects'
+                tasks; each one uses an AI connection: a LiteLLM server or an n8n webhook.</p>
+        </field>
+    </record>
+
+    <record id="view_woow_project_ai_push_key_wizard_form" model="ir.ui.view">
+        <field name="name">woow.project.ai.push.key.wizard.form</field>
+        <field name="model">woow.project.ai.push.key.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Push Key">
+                <div class="alert alert-warning" role="alert">
+                    Copy this key now. It is not stored and will not be shown again.
+                </div>
+                <group>
+                    <field name="assistant_id"/>
+                    <field name="push_key" widget="CopyClipboardChar"/>
+                </group>
+                <footer>
+                    <button string="Done" special="cancel" class="btn-primary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

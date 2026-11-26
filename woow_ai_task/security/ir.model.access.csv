@@ -1,0 +1,8 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_woow_project_ai_connection_system,woow.project.ai.connection.system,model_woow_project_ai_connection,base.group_system,1,1,1,1
+access_woow_project_ai_assistant_system,woow.project.ai.assistant.system,model_woow_project_ai_assistant,base.group_system,1,1,1,1
+access_woow_project_ai_assistant_project_user,woow.project.ai.assistant.project.user,model_woow_project_ai_assistant,project.group_project_user,1,0,0,0
+access_woow_project_ai_job_system,woow.project.ai.job.system,model_woow_project_ai_job,base.group_system,1,1,0,1
+access_woow_project_ai_call_log_system,woow.project.ai.call.log.system,model_woow_project_ai_call_log,base.group_system,1,0,0,1
+access_woow_project_ai_usage_month_system,woow.project.ai.usage.month.system,model_woow_project_ai_usage_month,base.group_system,1,0,0,0
+access_woow_project_ai_push_key_wizard_system,woow.project.ai.push.key.wizard.system,model_woow_project_ai_push_key_wizard,base.group_system,1,1,1,1

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="woow_ai_task.TaskChat">
+        <div class="o_woow_project_ai_task_chat d-flex flex-column border rounded bg-view" t-ref="content">
+            <div t-if="state.error" class="alert alert-warning m-3" role="alert" t-esc="state.error"/>
+            <t t-elif="state.thread">
+                <!-- an archived task: read only, so no message actions (edit, delete, react, reply) either -->
+                <Thread thread="state.thread" t-key="state.thread.localId" jumpPresent="state.jumpPresent"
+                        messageActions="!state.readonly"
+                        messageEdition="messageEdition" messageToReplyTo="messageToReplyTo"/>
+                <div t-if="state.readonly" class="alert alert-info m-3 mb-2" role="status">
+                    This task is archived: its AI chats can only be read.
+                </div>
+                <t t-else="">
+                    <div t-if="props.tab === 'customer'" class="o_woow_project_ai_task_chat_hint small text-muted px-3 pt-2">
+                        <i class="fa fa-info-circle me-1" role="img" aria-hidden="true"/>
+                        The customers of this task read this chat. A message of yours goes to them and pauses the AI
+                        for a while; the AI does not answer colleagues here.
+                    </div>
+                    <!-- one composer per conversation: the form pager moves this widget to another task -->
+                    <Composer composer="state.thread.composer" t-key="state.thread.localId"
+                              autofocus="state.autofocus"
+                              messageEdition="messageEdition" messageToReplyTo="messageToReplyTo"
+                              onPostCallback.bind="onPosted" dropzoneRef="contentRef"/>
+                </t>
+            </t>
+            <div t-elif="state.ask" class="p-3">
+                <button type="button" class="btn btn-primary o_woow_project_ai_task_chat_open" t-on-click="onClickOpen">
+                    <i class="fa fa-comments me-1" role="img" aria-hidden="true"/>Open the AI chat of this task
+                </button>
+            </div>
+            <div t-else="" class="p-3 text-muted">
+                <i class="fa fa-spinner fa-spin me-1" role="img" aria-hidden="true"/>Opening the AI chat…
+            </div>
+        </div>
+    </t>
+</templates>

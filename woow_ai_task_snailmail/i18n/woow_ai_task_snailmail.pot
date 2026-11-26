@@ -1,0 +1,37 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* woow_ai_task_snailmail
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 18.0-20250807\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-24 19:00+0000\n"
+"PO-Revision-Date: 2026-11-24 19:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: woow_ai_task_snailmail
+#. odoo-python
+#: code:addons/woow_ai_task_snailmail/models/snailmail_letter.py:0
+msgid "A file of a task AI conversation cannot be sent by post."
+msgstr ""
+
+#. module: woow_ai_task_snailmail
+#: model:ir.model.fields,field_description:woow_ai_task_snailmail.field_snailmail_letter__attachment_fname
+msgid "Attachment Filename"
+msgstr ""
+
+#. module: woow_ai_task_snailmail
+#: model:ir.model.fields,field_description:woow_ai_task_snailmail.field_snailmail_letter__attachment_datas
+msgid "Document"
+msgstr ""
+
+#. module: woow_ai_task_snailmail
+#: model:ir.model,name:woow_ai_task_snailmail.model_snailmail_letter
+msgid "Snailmail Letter"
+msgstr ""

@@ -1,21 +1,427 @@
 # Woow Odoo Project AI
 
-Odoo 18 addon for **project AI**: every task gets two AI conversations, an
-internal one for the colleagues who can read the task and a customer one for
-the portal users who can read it (also on the portal task page). The project
-picks one **AI assistant** per conversation; each assistant uses an
-**AI connection** to an n8n webhook or a LiteLLM (OpenAI-compatible) server.
+Odoo 18 addon for **project AI**: each task gets up to two AI conversations,
+one per AI assistant its project chose: an internal one for the colleagues
+with Project rights who can read the task and its project, and a customer
+one for the portal users who can read it (also on the portal task page; in a
+project shared with portal users). Each assistant uses an **AI connection**
+to an n8n webhook or a LiteLLM (OpenAI-compatible) server.
 
 The module ships its own runtime core (connections, assistants, reply queue,
 call logs, monthly usage, push API). It depends on standard Odoo modules only
-and installs next to the Discuss AI modules (`woow_ai_contact`) without
-sharing anything with them.
+and installs next to the Discuss AI modules (`woow_ai_contact`) and Live Chat
+AI (`im_livechat_ai`) without sharing anything with them.
 
 [繁體中文說明](README_zh-TW.md)
 
+## Three separate AI products
+
+Since 2026-11-24 discuss AI, project AI and Live Chat AI are three separate
+products. Each has its own runtime core and is downloaded and deployed on
+its own; they share no code and no data.
+
+| Product | Modules | Repository |
+|---|---|---|
+| Discuss AI | `woow_ai_contact`, `woow_ai_contact_portal_discuss` | Gitea `woow-paas/Woow_odoo_discuss_ai` (GitHub mirror `WOOWTECH/Woow_odoo_discuss_ai`) |
+| Project AI (this repository) | `woow_ai_task` | Gitea `woow-paas/Woow_odoo_project_ai` |
+| Live Chat AI | `im_livechat_ai` | GitHub `WOOWTECH/Woow_odoo_ai_livechat` |
+
+This repository's modules (`woow_ai_task` and its four bridges):
+
 | Module | Status | What it does |
 |---|---|---|
-| `woow_ai_task` | in development | Project AI: internal and customer AI chats on every task |
+| `woow_ai_task` | 18.0.1.0.0 | Project AI: internal and customer AI chats on every task |
+| `woow_ai_task_portal_discuss` | 18.0.1.0.0 | Bridge, installed automatically with `woow_odoo_portal_discuss`: task chats stay out of `/my/discussions`, its tabs and its card |
+| `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows; the unread messages of the customer's task AI chats get their own notice and `/my` card, which open the task page |
+| `woow_ai_task_snailmail` | 18.0.1.0.0 | Bridge, installed automatically with `snailmail` (which Odoo installs with `mail`): a file of a task AI chat is never put in a letter |
+| `woow_ai_task_document_management` | 18.0.1.0.0 | Bridge, installed automatically with `woow_document_management`: a filing rule never copies a file of a task AI chat into a document folder |
+
+## Alignment (contract v1.2)
+
+Discuss AI, Project AI and Live Chat AI are configured and run the same
+way through one written contract: connection and assistant fields, roles
+and menus, how a turn runs, the n8n and LiteLLM wire formats, what people
+see, logs and usage, `neutralize.sql`, the zh_TW glossary and the upgrade
+rules. **This release (18.0.1.0.0) implements contract v1.2.** Its package
+is in this repository, copied byte for byte: `docs/CONTRACT.md` and
+`woow_ai_task/tests/contract/` (never edited here; a new contract version
+replaces both). `woow_ai_task/tests/test_contract.py` runs its fourteen
+checks against this module (`--test-tags woow_ai_contract`). Project AI's
+values (contract 3.1): LiteLLM answers are streamed, the system message
+has an identity block, and the person's text carries the system's speaker
+label: `[<name>] ` in the internal chat, where every speaker is an
+employee, and `[客戶 <name>] ` / `[負責同事 <name>] ` in the customer chat (a
+name with an `@` counts as no name: `[客戶] `, or no label in the internal
+chat).
+
+## Features
+
+- **AI connections** (system administrators): an n8n webhook (requests
+  optionally signed with HMAC-SHA256) or a LiteLLM server (OpenAI-compatible
+  chat completions; Odoo sends the conversation and never any tool, so these
+  are chat-only). Write-only key, model (required for LiteLLM: it picks the
+  deployment by its name), timeouts, retries, streaming, documents, files in
+  replies, content logging, a readiness check and *Test Connection*. **Safe for Customers**: always for LiteLLM; for n8n only once
+  an administrator ticked it, and cleared when the workflow URL or the
+  backend type changes.
+- **AI assistants** (system administrators): name, avatar, an archived bot
+  partner (never offered in "Start a conversation", still posts in the task
+  chats), system prompt, error message, history length, push key; the
+  description is shown to project managers under each picker of the project's
+  "AI Assistants" page.
+- **Projects** (project managers): an internal and a customer AI assistant
+  (the customer one must use a connection safe for customers), the project
+  text of each tab, a welcome message for the customer chat, the pause after
+  a colleague writes; readiness and this month's AI replies per tab.
+- **Up to two private conversations per task** (one per assistant the
+  project chose), created when someone opens the tab:
+  - *Internal AI chat*: colleagues with Project rights who can read the task
+    and its project, and every project whose internal text an answer used
+    (a task moved to another project keeps its earlier answers with the
+    readers of the old one);
+  - *Customer AI chat*: portal users who can read the task (also on the
+    portal task page), in a project shared with portal users; colleagues may
+    read and write there and join muted.
+- **Membership follows the task access**, by Odoo's own rules: only this
+  module adds members; synced on every access-relevant change and by an
+  hourly sweep (it resumes where it stopped when a round outgrows the cron's
+  time limit); a post by someone who lost the access is refused and they are
+  removed at once; every message (a person's, an AI reply, a push) first
+  removes the members who lost the access. Until the sync, members who lost
+  the access read nothing (a global rule that changes nothing for any other
+  channel), and their open pages get no live message of the chat any more,
+  the message that removed them included (every bus poll leaves out the task
+  chats the polling user cannot read now). A tab's chat is found through the
+  chat's own link only, so no task write can point a tab at another
+  conversation.
+- **Every message is answered** (no @AI): a burst of one person gets one
+  answer, two people asking at once each get theirs. A colleague's message
+  in the customer chat pauses the AI and unmutes that colleague; an n8n
+  handoff pauses it and schedules a To-Do for the first assignee (else the
+  project manager); so does every customer message the AI cannot answer (the
+  tab is blocked, the backend failed, or the question waited too long: the
+  customer gets the error message). An open To-Do is reused; once it is
+  done, the next such message schedules a new one.
+- **What the AI gets**: the assistant's prompt, the project text of its tab
+  (the customer chat never gets the internal one; the internal one only
+  while every person of the chat can read the project, as the internal chat
+  requires) and a short task summary read with the asker's own rights
+  (customer chat: the portal-readable task fields, without related tasks;
+  internal chat: related records every member can read); never the chatter.
+  The customer chat takes no log note (its customers read everything in it).
+- **Durable reply queue** in the cron process, typing indicator, files both
+  ways (images inline, documents as file parts or signed links; the files of
+  one answer: 45 seconds and 100 MB together, a failed download stays a
+  link), Markdown replies, push API for n8n "skip, then push", call logs
+  (30 days) and a permanent monthly usage per project and tab (a reference
+  for invoicing by hand, no billing: limits live in the LiteLLM keys).
+
+## Install
+
+1. Put this whole repository on the addons path: the four bridges must be
+   there too, so that Odoo installs them with the modules they bridge.
+2. Install *Project AI* (`woow_ai_task`). It depends on `project`, `mail`,
+   `portal`, `bus` and `web`; zh_TW translations included.
+3. Settings: Project > Configuration > Project AI (system administrators):
+   *AI Connections*, *AI Assistants*, *Reply Jobs*, *Call Logs*, *AI Usage*.
+   Then, on each project, the *AI Assistants* page.
+
+Set `web.base.url` to the public address of Odoo (and
+`web.base.url.freeze`): the signed download links sent to the backends are
+built from it. Give the cron enough time: `limit_time_real_cron` at least the
+longest connection timeout + 60 s (+ 70 s with prefork workers); otherwise
+replies run in a thread of the web worker (the assistant form says so).
+
+The install runs `ANALYZE discuss_channel` (the new task link column gets
+its statistics at once: PostgreSQL plans the channel rule with them).
+
+**Large databases (PostgreSQL JIT).** For system administrators the task
+chat rule keeps an arm for the chats they are not a member of, and
+PostgreSQL adds its whole estimated cost to every Discuss statement of
+theirs (it runs only when a statement meets a task chat they are not a
+member of). That estimate grows with the tasks that have a task chat (one
+or two chats each): measured with column statistics on Odoo's own task
+rules, about 17.9 per such task for an administrator who is also a Project
+administrator (93,959 at 5,250 tasks; 281,699 at 15,750) and 13.6 for one
+who is not. It passes `jit_above_cost` (100,000 by default) from about
+5,600 such tasks (7,400 for the second kind). Other task rules (the PaaS
+platform's own) give other figures, so read the estimate on the database
+itself, in `odoo shell`:
+
+```python
+from odoo.tools import SQL
+query = env['discuss.channel'].with_user(env.ref('base.user_admin'))._search([])
+env.cr.execute(SQL('EXPLAIN %s', query.select()))
+print(env.cr.fetchone()[0])  # cost=<startup>..<total>: compare <total> with jit_above_cost
+```
+
+Above the threshold PostgreSQL compiles those statements with JIT, about
+60 ms each: at 15,750 tasks an administrator's `/mail/data` took 226 ms
+(36 ms with JIT off) and opening a chat 164 ms (49 ms). Other users stay
+far below (5,240 at most at 15,750 tasks; no JIT). When the
+administrator's estimate is above `jit_above_cost`, turn JIT off for that
+database, as the database owner: `ALTER DATABASE <db> SET jit = off;` (new
+connections take it: restart Odoo). The module never changes it.
+
+## Upgrading
+
+This is the first release: no site runs an earlier version, and there is
+nothing to migrate. What can keep an assistant from answering, and what to
+check first (the *Readiness* column of *AI Connections* and the project's
+*AI Assistants* page say why):
+
+- a LiteLLM connection without a model name is not ready (LiteLLM picks the
+  deployment by it);
+- a connection without an endpoint URL, or a LiteLLM one without a key;
+- the customer chat needs a connection that is safe for customers;
+- the cron needs the time above (otherwise replies run in a web worker's
+  thread, slower but answered).
+
+Translations: the module's zh_TW strings are loaded at install; an
+administrator's own translations of this module's strings are overwritten
+when it is upgraded.
+
+### Cron workers next to Discuss AI
+
+Each AI module (this one and `woow_ai_contact`) has a priority-1 dispatcher
+cron that keeps one cron worker for its pass: up to its window, plus the
+longest connection timeout, plus 60 s.
+
+- Plan one cron thread per AI dispatcher plus one for every other cron:
+  `max_cron_threads` >= 3 with both modules on one database (woow_prod).
+- When the AI dispatchers are as many as the cron threads (for example
+  2 and 2), both use short passes (a 60 s window, a 5 s wait), so the other
+  crons (deploys, the e-mail queue) get a turn between passes.
+- With a single cron thread, `limit_time_real_cron` must cover both passes
+  (Discuss AI's runs first): otherwise this module's replies run in thread
+  mode. A pass that finds too little time left starts no reply and runs
+  again shortly.
+- A threaded cron process needs `db_maxconn` >= both modules' concurrency + 6.
+
+## Once installed: keep the five modules in every image
+
+The module adds a **global record rule on `discuss.channel`** whose domain
+uses one of its computed fields, plus views and crons. The rule applies
+only where the module's code is loaded (its domain checks that the
+module's field is in the registry). Without that check, every
+non-superuser channel access raised on the unknown field (Discuss, Live
+Chat and portal chats site-wide) wherever the rule's row is in the
+database but the code is not loaded: in an image that lacks the module (a
+rollback image), and while the modules that load before it run (Odoo runs
+their at_install tests during a registry load; a migration script that
+acts as a user). Now the rule is empty there, and silently: the task chats
+keep only Odoo's own channel rules (members, and system administrators),
+without the task check, the membership sync and the read check of this
+module. The module's three crons fail in such an image; Odoo switches a
+cron off after 5 failures over at least 7 days, and (their data is
+noupdate) a later roll-forward does not switch them on again: do it by
+hand (Settings > Technical > Scheduled Actions). So every image that
+serves the database must still contain `woow_ai_task` as long as it is
+installed.
+
+The document bridge extends two private methods of
+`woow_document_management` (18.0.2.0.0):
+`_woow_auto_file_checked(attachments, unfiled)` and
+`_woow_backfill_domain()`, and passes through any argument they gain. It
+refuses to load when either is gone or can no longer be called the way
+`woow_document_management` calls it (the registry does not start; a
+compatible change, such as an added optional parameter or another module's
+`*args, **kwargs` wrapper, passes). Release tooling: paas-odoo-ci must
+start a registry with both modules installed (for example `odoo -d <tmp>
+-i woow_document_management,woow_ai_task --stop-after-init`: the bridge
+installs itself), so an incompatible release of either fails there, before
+it reaches an image.
+
+The notification-centre bridge (`woow_ai_task_portal_notification`)
+extends `woow_portal_notification`'s private
+`res.users._wpn_public_message_domain`. If a release renames it, the
+registry load logs it as CRITICAL (never a refusal: the centre is a page,
+not a reason to stop the database) and customers who lost a chat they were
+mentioned in may get an error page on `/my/notifications` again: update
+the bridge with `woow_portal_notification`. The centre's fix needs both
+`woow_portal_notification` and the `/my` Discussions bridge
+(`woow_odoo_portal_discuss` with `woow_portal_notification_discuss`), as
+the bridge depends on them; woow_prod has all of them (module inventory of
+2026-11-25).
+
+Ship the five modules together, in every image (rollback images included):
+for paas-odoo-ci, `addons-sources.py sync --modules
+woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail,woow_ai_task_document_management`
+and the same five names in `paas-addons.list` and `cloud-addons.list`. Odoo
+installs a bridge by itself only while one of its dependencies is being
+installed; `-u`, `-u all` and *Update Apps List* never install a new module.
+So when a bridge reaches a database after `woow_ai_task` and the portal
+module it bridges are both installed, install it explicitly (it is
+harmless): `-i woow_ai_task_portal_discuss` where `woow_odoo_portal_discuss`
+is installed, `-i woow_ai_task_portal_notification` where
+`woow_portal_notification_discuss` is, `-i woow_ai_task_snailmail` where
+`snailmail` is, `-i woow_ai_task_document_management` where
+`woow_document_management` is (or from Apps). Never install a bridge
+where its other side is missing: that would install the other side too.
+
+Module operations from Apps or `odoo shell` (install, upgrade, uninstall:
+`button_immediate_*`) are refused while any cron of the database runs
+("Odoo is currently processing a scheduled action"), and the AI dispatchers
+(this module's, `woow_ai_contact`'s) and the membership sweep hold their
+cron for a whole pass. Run them in a quiet moment; or first set the system
+parameters `woow_ai_task.job_runner` (and `woow_ai_contact.job_runner`) to
+`thread` and wait for the current pass to end; or stop the cron process
+(`max_cron_threads=0` on the cron pod) and try again. `odoo -i` / `-u` from
+the command line does not take that lock.
+
+To remove it, **uninstall it on an image that contains it**. The uninstall
+hook first switches the global rule off, removes the people from the task
+chats (the AI bots stay) and archives the chats (history kept, readable by
+system administrators); Odoo then deletes the module's records (the rule
+first) and only after that its fields and tables: the AI connections with
+their keys, the assistants, reply jobs, call logs and monthly usage are
+gone (back them up first if needed). The archived chats keep their
+messages but lose their task link (Odoo drops the module's columns):
+installing the module again starts new, empty chats. The people leave all
+the chats in two statements: with 10,000 task chats and 30,030 people in
+them the hook took 3.5 s and the whole uninstall 6.5 s (member by member,
+as before, 371 s: longer than a web request may run). Uninstalling it also
+uninstalls its four bridges (`woow_ai_task_portal_discuss`,
+`woow_ai_task_portal_notification`, `woow_ai_task_snailmail`,
+`woow_ai_task_document_management`): they hold nothing but their code and
+one portal card, so there is nothing to restore. Only a module that
+depends on it and must stay installed (for example the PaaS platform,
+should it come to depend on it) blocks the uninstall: then forward-fix, or
+restore the database and filestore snapshot taken before the upgrade.
+
+`odoo-bin neutralize` (copies for testing): the AI connections lose their
+URL and key and are archived, n8n "Safe for Customers" is cleared, push keys
+are revoked; each table is checked first (`to_regclass`), so a database where
+the module's tables are missing can still be neutralized.
+
+## Protocol and details
+
+- Wire format of both backends, the push API, signed attachment URLs, reply
+  rendering, usage: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+- Behaviour in detail (Traditional Chinese): [docs/PROJECT.md](docs/PROJECT.md).
+
+## Privacy and security
+
+- Task chats are private group conversations: members read them, only while
+  they can read the task now (the internal chat: and its project); so do
+  system administrators who can read the task (Odoo's administrator rule on
+  channels), without being listed as members. Anyone else reads nothing of a
+  chat they are not in (Odoo lets them read a group chat only as members): a
+  member who leaves (Odoo's Leave) reads it no more, and their unread
+  mentions there are marked read. Notifications (web push, mentions) only
+  reach members who can read the task; a mention never adds anyone to a
+  chat. Odoo keeps a
+  websocket's channels from its last subscribe and its client does not
+  re-subscribe when a member is removed, so every bus poll leaves out the
+  task chats the polling user cannot read now: a removed member's open page
+  (or script) gets no live message of the chat, not even the one whose post
+  removed them.
+- Odoo's post route (`/mail/message/post`) applies the client's `context`
+  to the request. In a task chat its `default_*` keys reach nothing the
+  post creates, and the rows the module creates in a client's request (the
+  reply job, the colleagues' To-Do, the AI's own posts and files, call
+  logs) are made from the language and time zone only: a client cannot
+  queue a job that looks running or used up, or move, hide or attach files
+  to a To-Do.
+- Connections (URLs, keys) and prompts are for system administrators only;
+  keys are never readable and never sent to a browser; push keys are stored
+  hashed. Project managers read assistant names only.
+- The task summary is read with the asker's own access rights, never sudo;
+  the customer chat gets only portal-readable task fields.
+- Backend replies are untrusted: HTML is escaped, links are limited to
+  http/https/mailto, files are downloaded only from allowlisted hosts (over
+  https; plain http only from an allowlisted `localhost` or
+  `*.svc.cluster.local` host) with a size and time limit (a host that
+  trickles its bytes is cut at the deadline), and their type is detected
+  from the content. A URL whose host the module and the HTTP client could
+  read differently (a backslash, a user name before the host, a host
+  `urlsplit` and requests parse apart) is never linked, never downloaded
+  (at every redirect too) and never accepted as an endpoint URL.
+- Reading a task chat message or file: Odoo reads messages with sudo
+  wherever it does not call `read` (copies, exports through any model, the
+  values an onchange computes, delegated fields, template rendering), and
+  other models read them as superuser through their related and stored
+  computed fields (mail_group's message fields, the full composer's
+  parent-derived fields, hr_expense's main-attachment checksum, snailmail's
+  letter), in an onchange too. The module's read check sits where all of
+  them meet, the read from the database (`_fetch_query`), and it applies as
+  superuser too whenever the environment acts for a real user (`env.uid`):
+  the content of a task chat message (body, subject, files, recipients,
+  author, name...) is read only for someone who can read that chat now (its
+  task, and for the internal chat the projects whose internal text it
+  used), whatever way its id arrived; so is the content of a task chat file
+  (name, data, checksum, size, type, token). What Odoo's record rules and
+  access checks read as superuser (where a message or a file belongs, its
+  type, who and when) stays readable, and a rule check never brings the
+  content into the cache. The full composer refuses a parent message its
+  user cannot read. Searches leave those messages out too (Odoo lets their
+  authors and notified partners find them, and the Inbox counter drops their
+  unread mentions once they lose the chat); so do the failures Odoo shows an
+  author and the delivery status notices the mail queue sends them, and the
+  portal notification centre (`woow_portal_notification`, through the
+  notification bridge: a customer mentioned in a chat they later left or
+  lost; the bridge comes with `woow_portal_notification_discuss`, which needs
+  `woow_odoo_portal_discuss`: where the centre is installed, install both). The lists of messages (Inbox, History, Starred, Settings >
+  Messages) show a system administrator the task chats they are a member
+  of; they open any other chat they may read from its task. Deleting a task
+  (its active subtasks with it) or a project deletes their AI conversations,
+  messages and files included, whoever deletes it (Odoo's cascade reads the
+  deleted messages and files as superuser for that person: not checked
+  there). For other people a task chat message's name (shown with sudo
+  where a record links it) is "Task AI chat", a task chat file's name is
+  "Task AI chat file", and its content read through another model is empty,
+  also in a request without a user. Settings > Technical > Emails leaves out
+  the mails of messages its reader cannot read. The task chats a user may
+  read: the list of their own member task chats they may read, computed
+  once per transaction (one indexed query, one more when they are in task
+  chats; again after a join, a leave, a group or an access change); for a
+  system administrator (who reads chats without being a member) also, after
+  that list, a sub-query compiled once per transaction that PostgreSQL
+  evaluates once per statement, and only when it meets a task chat not in
+  the list (in the channel rule and the Emails list; the lists of messages
+  use the list alone, and a check of a few chats is compiled for those
+  chats only). Which channels are task chats is kept per process for channels
+  that exist only.
+- Links, checked on the rows as stored (any id type, any command shape;
+  superuser included unless Odoo itself needs it): no message anywhere gets a
+  task chat message as its parent unless it is in that chat; a task chat's
+  file is never on a message elsewhere, never moved to another document,
+  never deleted through a message elsewhere, never put in a letter, and a
+  task chat message carries only files of the chat its author uploaded (the
+  AI's replies carry the module's files); no sub-channel is made of a task
+  chat or from one of its messages; nobody but the module joins a task chat
+  (member rows); outside superuser no file is created in a task chat
+  directly (a model name given as bytes or as XML-RPC base64, or in a
+  default, too), nobody changes or deletes another person's file (system
+  administrators excepted), edits or empties another person's message, or
+  changes another person's link previews; a message is created in a task
+  chat only by posting it there, superuser included (Odoo's own notices
+  and the AI's answers post; the mass-mail composer cannot put a message
+  there); reactions come only from members who may read the chat; no
+  rating is about a task chat or one of its messages, and a post in a task
+  chat takes no rating (Odoo's public rating route would post one as
+  superuser); outside superuser nobody writes a task chat message directly
+  (Odoo pins in SQL and stars on the partner's side); a task chat file is
+  never the main attachment of another document (invoices, expenses: Odoo's
+  own setter runs as superuser with the record's own files), and a document
+  filing rule (woow_document_management) never copies one into a folder,
+  for new files nor in its backfill. A mention reaches the members of the
+  chat only (and the AI bots): mentioning someone else posts the message
+  without notifying them, adds nobody and lets nobody else read it.
+- Roles that can read everything anyway: system administrators (code,
+  rules), Mail Template Editors (a template may call `.sudo()`); Access
+  Rights administrators can grant themselves anything.
+- Known limits: the read check trusts the superuser account itself (crons,
+  the reply runner, the signed download routes), so Odoo routes that switch
+  a user's request to it are not checked: `/portal/attachment/remove`
+  answers an employee the name of any file in its error (as it does for
+  every file of the database), and the HTML editor's image change
+  (`/html_editor/modify_image`) can add a picture to a task chat its user
+  may write in (in an archived task's chat too). Translations of task chat
+  messages (Discuss's *Translate*) are stored by Odoo and readable by system
+  administrators.
+- Call logs hold status and timing only, unless *Log Request Content* is on
+  for a connection (turning it off erases the stored content).
 
 ## Repository
 

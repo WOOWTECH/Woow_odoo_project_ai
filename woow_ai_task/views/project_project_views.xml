@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="edit_project_woow_project_ai" model="ir.ui.view">
+        <field name="name">project.project.form.woow_ai_task</field>
+        <field name="model">project.project</field>
+        <field name="inherit_id" ref="project.edit_project"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="AI Assistants" name="woow_project_ai_assistants" groups="project.group_project_user">
+                    <div class="alert alert-info" role="status">
+                        With an internal AI assistant, every task of this project gets an "Internal AI chat"
+                        (colleagues with Project rights who can read the task and this project); with a customer AI assistant and a
+                        project shared with portal users, a "Customer AI chat" (portal users who can read the task,
+                        also on the portal task page). The internal AI answers every message of the colleagues; the
+                        customer AI answers the customers and pauses after a colleague writes. System administrators
+                        prepare the AI assistants and their AI connections (Project > Configuration > Project AI).
+                    </div>
+                    <group>
+                        <group string="Internal AI Chat" name="woow_project_ai_internal">
+                            <field name="woow_project_ai_internal_assistant_id"
+                                   options="{'no_create': True, 'no_open': True}"/>
+                            <field name="woow_project_ai_internal_assistant_description" readonly="1" nolabel="1"
+                                   colspan="2" class="text-muted"
+                                   invisible="not woow_project_ai_internal_assistant_description"/>
+                            <field name="woow_project_ai_internal_state" readonly="1"/>
+                            <field name="woow_project_ai_internal_state_reason" readonly="1" nolabel="1" colspan="2"/>
+                            <field name="woow_project_ai_usage_internal_month"/>
+                        </group>
+                        <group string="Customer AI Chat" name="woow_project_ai_customer">
+                            <field name="woow_project_ai_customer_assistant_id"
+                                   options="{'no_create': True, 'no_open': True}"/>
+                            <field name="woow_project_ai_customer_assistant_description" readonly="1" nolabel="1"
+                                   colspan="2" class="text-muted"
+                                   invisible="not woow_project_ai_customer_assistant_description"/>
+                            <field name="woow_project_ai_customer_state" readonly="1"/>
+                            <field name="woow_project_ai_customer_state_reason" readonly="1" nolabel="1" colspan="2"/>
+                            <field name="woow_project_ai_usage_customer_month"/>
+                            <field name="woow_project_ai_pause_minutes"
+                                   invisible="not woow_project_ai_customer_assistant_id"/>
+                        </group>
+                    </group>
+                    <group string="Project Text for the Internal AI" name="woow_project_ai_internal_brief"
+                           invisible="not woow_project_ai_internal_assistant_id">
+                        <field name="woow_project_ai_internal_brief" nolabel="1" colspan="2"
+                               placeholder="What the internal AI should know about this project (goals, people, conventions)"/>
+                    </group>
+                    <group string="Project Text for the Customer AI" name="woow_project_ai_customer_brief"
+                           invisible="not woow_project_ai_customer_assistant_id">
+                        <div colspan="2" class="text-muted">
+                            The only project text the customer chat ever sends: write nothing internal here.
+                        </div>
+                        <field name="woow_project_ai_customer_brief" nolabel="1" colspan="2"
+                               placeholder="What the customer AI may tell customers about this project"/>
+                        <field name="woow_project_ai_customer_welcome"
+                               placeholder="Optional: posted once when the customer chat of a task is opened"/>
+                    </group>
+                    <div class="d-flex justify-content-end" groups="base.group_system">
+                        <button name="action_woow_project_ai_view_usage" type="object" class="btn btn-secondary"
+                                string="AI Usage of This Project" icon="fa-bar-chart"/>
+                    </div>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

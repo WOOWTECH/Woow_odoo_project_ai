@@ -1,0 +1,274 @@
+# -*- coding: utf-8 -*-
+import base64
+import io
+import itertools
+import time
+import zipfile
+from unittest.mock import patch
+from urllib.parse import urlsplit
+
+from odoo.tests.common import BaseCase, _super_send, tagged
+
+from odoo.addons.woow_ai_task.tools import media
+
+from .common import MEDIA_GET, TINY_PDF, TINY_PNG, LocalServer, http_response
+
+
+def ooxml(main_part):
+    """Minimal OOXML package (enough for content sniffing)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as package:
+        package.writestr('[Content_Types].xml',
+                         '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+                         'content-types"/>')
+        package.writestr('_rels/.rels', '<?xml version="1.0"?><Relationships/>')
+        package.writestr(main_part, '<?xml version="1.0"?><root/>')
+    return buffer.getvalue()
+
+
+@tagged('post_install', '-at_install', 'woow_ai_task')
+class TestMedia(BaseCase):
+
+    domains = media.parse_domains('files.example.com\n*.cdn.example.com, https://other.example.org/x')
+
+    def test_allowlist(self):
+        self.assertEqual(self.domains, ['files.example.com', '*.cdn.example.com', 'other.example.org'])
+        self.assertTrue(media.url_allowed('https://files.example.com/a.png', self.domains))
+        self.assertTrue(media.url_allowed('https://a.b.cdn.example.com/a.png', self.domains))
+        self.assertFalse(media.url_allowed('https://cdn.example.com/a.png', self.domains))  # apex not matched
+        self.assertFalse(media.url_allowed('https://files.example.com.evil.com/a.png', self.domains))
+        self.assertFalse(media.url_allowed('https://evilfiles.example.com/a.png', self.domains))
+        self.assertFalse(media.url_allowed('ftp://files.example.com/a.png', self.domains))
+        self.assertFalse(media.url_allowed('https://user@evil.com/a.png', self.domains))
+
+    def test_plain_http_only_internal(self):
+        domains = media.parse_domains('files.example.com\nlocalhost\nmock.ns.svc.cluster.local')
+        self.assertFalse(media.url_allowed('http://files.example.com/a.png', domains))
+        self.assertTrue(media.url_allowed('https://files.example.com/a.png', domains))
+        self.assertTrue(media.url_allowed('http://localhost:18080/a.png', domains))
+        self.assertTrue(media.url_allowed('http://mock.ns.svc.cluster.local/a.png', domains))
+        # internal but not allowlisted
+        self.assertFalse(media.url_allowed('http://other.ns.svc.cluster.local/a.png', domains))
+        with patch(MEDIA_GET) as get:
+            with self.assertRaises(media.DownloadRefused):
+                media.download('http://files.example.com/a.png', domains, 1000)
+        get.assert_not_called()
+        # a redirect from https to plain http is refused too
+        redirect = http_response(302, headers={'Location': 'http://files.example.com/b.png'})
+        with patch(MEDIA_GET, return_value=redirect) as get:
+            with self.assertRaises(media.DownloadRefused):
+                media.download('https://files.example.com/a.png', domains, 1000)
+        self.assertEqual(get.call_count, 1)
+
+    def test_download_ok(self):
+        with patch(MEDIA_GET, return_value=http_response(200, chunks=[TINY_PNG[:10], TINY_PNG[10:]])) as get:
+            raw, final = media.download('https://files.example.com/a.png', self.domains, 1000)
+        self.assertEqual(raw, TINY_PNG)
+        self.assertEqual(final, 'https://files.example.com/a.png')
+        self.assertFalse(get.call_args.kwargs['allow_redirects'])
+        self.assertTrue(get.call_args.kwargs['stream'])
+        self.assertEqual(get.call_args.kwargs['timeout'], media.DOWNLOAD_TIMEOUT)
+
+    def test_download_redirect_outside_allowlist(self):
+        redirect = http_response(302, headers={'Location': 'https://evil.example.net/a.png'})
+        with patch(MEDIA_GET, return_value=redirect) as get:
+            with self.assertRaises(media.DownloadRefused):
+                media.download('https://files.example.com/a.png', self.domains, 1000)
+        self.assertEqual(get.call_count, 1)  # the outside URL is never requested
+
+    def test_download_redirect_inside_allowlist(self):
+        responses = [http_response(301, headers={'Location': '/b.png'}), http_response(200, chunks=[TINY_PNG])]
+        with patch(MEDIA_GET, side_effect=responses) as get:
+            raw, final = media.download('https://files.example.com/a.png', self.domains, 1000)
+        self.assertEqual(final, 'https://files.example.com/b.png')
+        self.assertEqual(get.call_count, 2)
+
+    def test_download_too_large(self):
+        with patch(MEDIA_GET, return_value=http_response(200, headers={'Content-Length': '5000'}, chunks=[b'x'])):
+            with self.assertRaises(media.DownloadRefused):
+                media.download('https://files.example.com/a.png', self.domains, 1000)
+        # no / lying Content-Length: the stream is cut while reading
+        big = http_response(200, chunks=[b'x' * 600, b'x' * 600, b'x' * 600])
+        with patch(MEDIA_GET, return_value=big):
+            with self.assertRaises(media.DownloadRefused):
+                media.download('https://files.example.com/a.png', self.domains, 1000)
+        self.assertTrue(big.close.called)
+
+    def test_download_deadline(self):
+        # (independent review F6) a host that trickles its bytes: the download ends at the deadline
+        with patch(MEDIA_GET) as get, patch.object(media, '_now', return_value=100.0):
+            with self.assertRaises(media.DownloadRefused) as error:
+                media.download('https://files.example.com/a.png', self.domains, 1000, deadline=99.0)
+        get.assert_not_called()
+        self.assertIn('too slow', str(error.exception))
+        slow = http_response(200, chunks=[b'x' * 10, b'x' * 10, b'x' * 10])
+        # the socket cutter's timer, the hop's timeout, then one check per chunk
+        clock = itertools.chain([0.0, 0.0, 1.0, 50.0], itertools.repeat(100.0))
+        with patch(MEDIA_GET, return_value=slow) as get, patch.object(media, '_now', lambda: next(clock)):
+            with self.assertRaises(media.DownloadRefused) as error:
+                media.download('https://files.example.com/a.png', self.domains, 1000, deadline=40.0)
+        self.assertIn('too slow', str(error.exception))
+        self.assertEqual(get.call_args.kwargs['timeout'], (10, 40.0), 'no read may wait past the deadline')
+        self.assertTrue(slow.close.called)
+
+    def test_download_not_allowlisted(self):
+        with patch(MEDIA_GET) as get:
+            with self.assertRaises(media.DownloadRefused):
+                media.download('https://evil.example.net/a.png', self.domains, 1000)
+        get.assert_not_called()
+
+    def test_mimetype_sniffed(self):
+        self.assertEqual(media.safe_mimetype(TINY_PNG), 'image/png')
+        self.assertEqual(media.safe_mimetype(TINY_PDF), 'application/pdf')
+        # fake image: HTML / SVG content become octet-stream whatever the name says
+        self.assertEqual(media.safe_mimetype(b'<html><body><script>alert(1)</script></body></html>'),
+                         'application/octet-stream')
+        self.assertEqual(media.safe_mimetype(b'<svg xmlns="http://www.w3.org/2000/svg" onload="x()"></svg>'),
+                         'application/octet-stream')
+        self.assertEqual(media.safe_mimetype(b'<?xml version="1.0"?><root/>'), 'application/octet-stream')
+
+    def test_active_types_exact(self):
+        for mimetype in ('text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml',
+                         'application/rss+xml', 'text/javascript', 'application/javascript',
+                         'application/ecmascript', 'TEXT/HTML; charset=utf-8'):
+            self.assertTrue(media.is_active_type(mimetype), mimetype)
+        for mimetype in ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                         'application/pdf', 'image/png', 'text/csv', 'application/zip'):
+            self.assertFalse(media.is_active_type(mimetype), mimetype)
+
+    def test_ooxml_types_kept(self):
+        expected = {
+            'xl/workbook.xml': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'word/document.xml': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'ppt/presentation.xml': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        }
+        for part, mimetype in expected.items():
+            self.assertEqual(media.safe_mimetype(ooxml(part)), mimetype, part)
+
+    def test_base64(self):
+        data = base64.b64encode(TINY_PNG).decode()
+        self.assertEqual(media.decode_base64(data, 1000), TINY_PNG)
+        self.assertEqual(media.decode_base64('data:image/png;base64,' + data, 1000), TINY_PNG)
+        with self.assertRaises(media.DownloadRefused):
+            media.decode_base64(data, 10)
+        with self.assertRaises(media.DownloadRefused):
+            media.decode_base64('not base64 !!', 1000)
+
+    def test_signed_token(self):
+        token, expires = media.make_token('secret', 12, 'abc', now=1000)
+        self.assertEqual(expires, 1000 + media.SIGNED_URL_TTL)
+        self.assertTrue(media.check_token('secret', 12, 'abc', token, now=1000))
+        self.assertTrue(media.check_token('secret', 12, 'abc', token, now=expires))
+        self.assertFalse(media.check_token('secret', 12, 'abc', token, now=expires + 1))  # expired
+        self.assertFalse(media.check_token('secret', 13, 'abc', token, now=1000))  # other attachment
+        self.assertFalse(media.check_token('secret', 12, 'abd', token, now=1000))  # content changed
+        self.assertFalse(media.check_token('other', 12, 'abc', token, now=1000))  # other database
+        exp, sig = token.split('.')
+        self.assertFalse(media.check_token('secret', 12, 'abc', '%s.%s' % (int(exp) + 3600, sig), now=1000))
+        self.assertFalse(media.check_token('secret', 12, 'abc', exp + '.' + sig[:-1] + '0', now=1000)
+                         if sig[-1] != '0' else False)
+        self.assertFalse(media.check_token('secret', 12, 'abc', 'garbage', now=1000))
+
+    def test_signed_token_scope_is_its_own(self):
+        # a URL signed by the Discuss AI module (scope "woow_ai", same database secret) never opens here
+        import hashlib  # noqa: PLC0415
+        import hmac  # noqa: PLC0415
+        expires = 1000 + media.SIGNED_URL_TTL
+        other = hmac.new(b'secret', ('woow_ai|12|abc|%s' % expires).encode(), hashlib.sha256).hexdigest()
+        self.assertFalse(media.check_token('secret', 12, 'abc', '%s.%s' % (expires, other), now=1000))
+        self.assertEqual(media.SIGN_SCOPE, 'woow_ai_task.attachment')
+
+    def test_filenames(self):
+        self.assertEqual(media.filename_from_url('https://f.example.com/a/%E5%A0%B1%E5%83%B9.xlsx?x=1'), '報價.xlsx')
+        self.assertEqual(media.clean_filename('../../etc/passwd'), 'passwd')
+        self.assertEqual(media.clean_filename(''), 'file')
+        self.assertTrue(media.looks_like_file('https://x.example.com/a.PDF'))
+        self.assertFalse(media.looks_like_file('https://x.example.com/page.html'))
+
+
+def _send_slowly(conn, data, interval):
+    for index in range(len(data)):
+        conn.sendall(data[index:index + 1])
+        time.sleep(interval)
+
+
+@tagged('post_install', '-at_install', 'woow_ai_task')
+class TestMediaWire(BaseCase):
+    """media.download against a real local server (team review 2 and 6): every
+    failure of a body, a redirect or a slow host is a DownloadRefused (the
+    file stays a link), and the deadline holds inside one read too."""
+
+    domains = media.parse_domains('127.0.0.1')
+
+    @classmethod
+    def _request_handler(cls, s, r, **kw):
+        # Odoo's test guard compares the timeout with an int; the download's is a (connect, read) tuple
+        if urlsplit(r.url).hostname == '127.0.0.1':
+            return _super_send(s, r, **kw)
+        return super()._request_handler(s, r, **kw)
+
+    def fetch(self, handler, deadline_in=None, path='/f.png'):
+        with LocalServer(handler) as server:
+            url = server.url + path
+            deadline = time.monotonic() + deadline_in if deadline_in is not None else None
+            started = time.monotonic()
+            try:
+                media.download(url, self.domains, 100000, deadline=deadline)
+            except media.DownloadRefused as e:
+                return str(e), time.monotonic() - started
+            return None, time.monotonic() - started
+
+    def test_short_body(self):
+        def handler(conn, _request):
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n0123456789')
+        reason, _elapsed = self.fetch(handler, deadline_in=10)
+        self.assertTrue(reason and reason.startswith('download failed'), reason)
+
+    def test_wrong_content_encoding(self):
+        def handler(conn, _request):
+            body = b'this is not gzip at all'
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n'
+                         b'Connection: close\r\n\r\n%s' % (len(body), body))
+        reason, _elapsed = self.fetch(handler, deadline_in=10)
+        self.assertTrue(reason and reason.startswith('download failed'), reason)
+
+    def test_malformed_redirect(self):
+        def handler(conn, _request):
+            conn.sendall(b'HTTP/1.1 302 Found\r\nLocation: http://[\r\nContent-Length: 0\r\n'
+                         b'Connection: close\r\n\r\n')
+        reason, _elapsed = self.fetch(handler, deadline_in=10)
+        # requests itself already parses the next URL (even without following it), else the hop does
+        self.assertIn(reason, ('bad redirect', 'request failed: ValueError'))
+
+    def test_stall_in_the_body(self):
+        def handler(conn, _request):
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n0123456789')
+            time.sleep(4)
+        reason, elapsed = self.fetch(handler, deadline_in=1)
+        self.assertIsNotNone(reason)
+        self.assertLess(elapsed, 3)
+
+    def test_trickled_body_cut_at_the_deadline(self):
+        # every byte restarts the socket timeout: only the deadline's socket shutdown ends the read
+        def handler(conn, _request):
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n')
+            _send_slowly(conn, b'x' * 40, 0.15)
+        reason, elapsed = self.fetch(handler, deadline_in=1)
+        self.assertEqual(reason, 'too slow')
+        self.assertLess(elapsed, 3)
+
+    def test_trickled_headers_cut_at_the_deadline(self):
+        def handler(conn, _request):
+            _send_slowly(conn, b'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Slow: ' + b'y' * 40, 0.15)
+        reason, elapsed = self.fetch(handler, deadline_in=1)
+        self.assertEqual(reason, 'too slow')
+        self.assertLess(elapsed, 3)
+
+    def test_healthy_host(self):
+        def handler(conn, _request):
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'
+                         % (len(TINY_PNG), TINY_PNG))
+        reason, _elapsed = self.fetch(handler, deadline_in=10)
+        self.assertIsNone(reason)
