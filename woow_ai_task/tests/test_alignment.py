@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""The cross-product contract's project AI items (ALIGNMENT.md §5.3 items 1-5
-and 7, integration amendments 3 and 4): the LiteLLM model is required, the
-n8n timeout (120 s for a new connection, at most 300 s), no email in the
+"""The cross-product contract's project AI items: the LiteLLM model is
+required, the n8n timeout (120 s for a new connection, at most 300 s), no email in the
 LiteLLM metadata, the n8n "events" key, the person's name in the
 instructions as one cleaned line, the exception's type name only in stored
 errors, and links whose host part holds a backslash or a user name."""

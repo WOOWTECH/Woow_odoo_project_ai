@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the fix-delta review of PR #1 (review-pai1-delta/REVIEW.md:
-the item numbers are in the test names). The bridges (8, 10) are in
+"""Regression tests of the fix-delta review (the item numbers are in the test
+names). The bridges (8, 10) are in
 test_coexistence."""
 
 from unittest.mock import patch

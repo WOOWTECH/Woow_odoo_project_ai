@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Seventh review of PR #1 (79bb013): the logs of every handler (item 1), the
+"""Seventh review (79bb013): the logs of every handler (item 1), the
 uninstall hook and the administrators' point check under test (item 3), the
 internal chat's labels explained (item 6), the reply job from explicit values
 (item 7), the notification bridge's hook pin (item 10) and no statement for

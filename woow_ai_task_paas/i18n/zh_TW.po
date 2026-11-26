@@ -1,0 +1,126 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* woow_ai_task_paas
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 18.0-20250807\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-25 11:34+0000\n"
+"PO-Revision-Date: 2026-11-25 11:34+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/ir_module.py:0
+msgid ""
+"\"Project AI - PaaS\" cannot be uninstalled alone: uninstall \"Project AI\" "
+"(woow_ai_task), which removes it too. Removing it alone would bring the old "
+"task AI back."
+msgstr "「專案 AI - PaaS」不能單獨解除安裝：請解除安裝「專案 AI」（woow_ai_task），它會一起移除。單獨移除會讓舊版任務 AI 回來。"
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid ""
+"Ask our AI assistant about this task, at any time. Your messages and files "
+"are also visible to our team and to the other people who can see this task."
+msgstr "隨時向我們的 AI 助理詢問這張任務。我們的同事和其他看得到這張任務的人，也看得到您的訊息和檔案。"
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_cloud_service
+msgid "Cloud Service Instance"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+#: code:addons/woow_ai_task_paas/static/src/paas/task_detail_patch.xml:0
+msgid "Customer AI Chat"
+msgstr "客戶 AI 對話"
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_ir_http
+msgid "HTTP Routing"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_task.py:0
+msgid "Linked Cloud Services"
+msgstr "關聯雲端服務"
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_ir_module_module
+msgid "Module"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_project.py:0
+msgid ""
+"Only project managers can set the AI assistants and the project texts of a "
+"project."
+msgstr "只有專案經理可以設定專案的 AI 助理與專案說明。"
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid "Open this chat in a new tab"
+msgstr "在新分頁開啟"
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_agent_session
+msgid "Per-project Agent Runtime Pod Lifecycle Record"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_project_project
+msgid "Project"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_project_task
+msgid "Task"
+msgstr ""
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid ""
+"The customers of this task read this chat. A message of yours goes to them "
+"and pauses the AI for a while; the AI does not answer colleagues here."
+msgstr "這張任務的客戶看得到這個對話。您的訊息會傳給客戶，AI 也會暫停一段時間；AI 在這裡不回覆同事。"
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/legacy.py:0
+msgid ""
+"The old task AI is turned off. Customers: please use the \"Customer AI "
+"Chat\" on the task page; colleagues: the \"Internal AI Chat\" on the task "
+"form in the backend."
+msgstr "舊版任務 AI 已停用。客戶請在任務頁使用「客戶 AI 對話」；同事請在後台任務表單使用「內部 AI 對話」。"
+
+#. module: woow_ai_task_paas
+#. odoo-python
+#: code:addons/woow_ai_task_paas/models/project_project.py:0
+msgid ""
+"The old task AI is turned off: the Agent Runtime cannot be turned on for a "
+"project."
+msgstr "舊版任務 AI 已停用，不能替專案開啟 Agent Runtime。"
+
+#. module: woow_ai_task_paas
+#. odoo-javascript
+#: code:addons/woow_ai_task_paas/static/src/paas/task_chat/WoowProjectAiPaasTaskChat.xml:0
+msgid "This task is archived: its AI chats can only be read."
+msgstr "這張任務已封存：AI 對話只能閱讀。"
+
+#. module: woow_ai_task_paas
+#: model:ir.model,name:woow_ai_task_paas.model_woow_paas_platform_workspace_access
+msgid "Workspace User Access"
+msgstr ""

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the second fix-delta review of PR #1
-(review-pai1-delta2/REVIEW.md: the item numbers are in the test names), with
+"""Regression tests of the second fix-delta review (the item numbers are in
+the test names), with
 the reports' payloads: the read choke point (mail.message.fetch, the datas of
 a task-chat file), the links checked on the stored rows (any id type), and
 the brief projects of an internal chat. Payloads that need im_livechat's

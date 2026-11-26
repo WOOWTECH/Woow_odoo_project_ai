@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Regression tests of the sixth review of PR #1 (review-pai1-r6/REVIEW.md:
-the item numbers are in the test names) and of its class sweep: the flows
-where Odoo reads or deletes task-chat content as superuser for a real user
-who may not read the chat, each with its decision (a trusted marker, a
-filter in the domain, or a refusal; NOTES.md, round 6). Tests that need a
+"""Regression tests of the sixth review (the item numbers are in the test
+names) and of its class sweep: the flows where Odoo reads or deletes
+task-chat content as superuser for a real user who may not read the chat,
+each with its decision (a trusted marker, a filter in the domain, or a
+refusal). Tests that need a
 module of the coexistence database (the portal notification centre,
 hr_expense, woow_document_management, mass_mailing) skip elsewhere."""
 

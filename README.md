@@ -26,7 +26,7 @@ its own; they share no code and no data.
 | Project AI (this repository) | `woow_ai_task` | Gitea `woow-paas/Woow_odoo_project_ai` |
 | Live Chat AI | `im_livechat_ai` | GitHub `WOOWTECH/Woow_odoo_ai_livechat` |
 
-This repository's modules (`woow_ai_task` and its four bridges):
+This repository's modules (`woow_ai_task` and its five bridges):
 
 | Module | Status | What it does |
 |---|---|---|
@@ -35,6 +35,7 @@ This repository's modules (`woow_ai_task` and its four bridges):
 | `woow_ai_task_portal_notification` | 18.0.1.0.0 | Bridge, installed automatically with `woow_portal_notification_discuss`: the notification centre's unread conversations count what `/my/discussions` shows; the unread messages of the customer's task AI chats get their own notice and `/my` card, which open the task page |
 | `woow_ai_task_snailmail` | 18.0.1.0.0 | Bridge, installed automatically with `snailmail` (which Odoo installs with `mail`): a file of a task AI chat is never put in a letter |
 | `woow_ai_task_document_management` | 18.0.1.0.0 | Bridge, installed automatically with `woow_document_management`: a filing rule never copies a file of a task AI chat into a document folder |
+| `woow_ai_task_paas` | 18.0.1.0.0 | Bridge, installed automatically with the PaaS platform (`woow_paas_platform`): the customer AI chat on the `/woow` task page, the platform's old task AI switched off (not deleted), task chat members following workspace membership and service bindings, the project AI settings for project managers only ([docs/PAAS.md](docs/PAAS.md)) |
 
 ## Alignment (contract v1.2)
 
@@ -118,7 +119,7 @@ chat).
 
 ## Install
 
-1. Put this whole repository on the addons path: the four bridges must be
+1. Put this whole repository on the addons path: the five bridges must be
    there too, so that Odoo installs them with the modules they bridge.
 2. Install *Project AI* (`woow_ai_task`). It depends on `project`, `mail`,
    `portal`, `bus` and `web`; zh_TW translations included.
@@ -188,7 +189,7 @@ cron that keeps one cron worker for its pass: up to its window, plus the
 longest connection timeout, plus 60 s.
 
 - Plan one cron thread per AI dispatcher plus one for every other cron:
-  `max_cron_threads` >= 3 with both modules on one database (woow_prod).
+  `max_cron_threads` >= 3 with both modules on one database.
 - When the AI dispatchers are as many as the cron threads (for example
   2 and 2), both use short passes (a 60 s window, a 5 s wait), so the other
   crons (deploys, the e-mail queue) get a turn between passes.
@@ -198,7 +199,25 @@ longest connection timeout, plus 60 s.
   again shortly.
 - A threaded cron process needs `db_maxconn` >= both modules' concurrency + 6.
 
-## Once installed: keep the five modules in every image
+### On the PaaS platform
+
+Installing `woow_ai_task` where `woow_paas_platform` is installed brings the
+bridge `woow_ai_task_paas` in the same operation; nothing else is needed. It
+puts the customer AI chat on the `/woow` task page (the internal chat stays
+in the backend task form), switches the platform's old task AI off without
+deleting anything, keeps the task chat members in line with the PaaS access
+changes, and lets only project managers and administrators set a project's
+AI assistants and texts. The `/woow` Projects area shows only where the
+platform's `Show Projects (/woow)` setting is on (the bridge never changes
+it); elsewhere customers use the customer AI chat on the `/my/tasks/<id>`
+page. Who may use a task's customer AI chat follows who may read the task
+(the backend's visibility as it is today: project managers and project
+users read the tasks of every workspace's portal projects); limiting it to
+the members of the service's workspace is planned for a later version.
+Details, the old task AI's switch, the platform contract and rollback:
+[docs/PAAS.md](docs/PAAS.md).
+
+## Once installed: keep the modules in every image
 
 The module adds a **global record rule on `discuss.channel`** whose domain
 uses one of its computed fields, plus views and crons. The rule applies
@@ -226,9 +245,9 @@ The document bridge extends two private methods of
 refuses to load when either is gone or can no longer be called the way
 `woow_document_management` calls it (the registry does not start; a
 compatible change, such as an added optional parameter or another module's
-`*args, **kwargs` wrapper, passes). Release tooling: paas-odoo-ci must
-start a registry with both modules installed (for example `odoo -d <tmp>
--i woow_document_management,woow_ai_task --stop-after-init`: the bridge
+`*args, **kwargs` wrapper, passes). Release tooling must start a registry
+with both modules installed (for example `odoo -d <tmp> -i
+woow_document_management,woow_ai_task --stop-after-init`: the bridge
 installs itself), so an incompatible release of either fails there, before
 it reaches an image.
 
@@ -241,13 +260,31 @@ mentioned in may get an error page on `/my/notifications` again: update
 the bridge with `woow_portal_notification`. The centre's fix needs both
 `woow_portal_notification` and the `/my` Discussions bridge
 (`woow_odoo_portal_discuss` with `woow_portal_notification_discuss`), as
-the bridge depends on them; woow_prod has all of them (module inventory of
-2026-11-25).
+the bridge depends on them.
 
-Ship the five modules together, in every image (rollback images included):
-for paas-odoo-ci, `addons-sources.py sync --modules
-woow_ai_task,woow_ai_task_portal_discuss,woow_ai_task_portal_notification,woow_ai_task_snailmail,woow_ai_task_document_management`
-and the same five names in `paas-addons.list` and `cloud-addons.list`. Odoo
+The PaaS bridge keeps nothing in the database that needs its own code
+(no view, field, rule, filter, action, cron or asset: its form changes are
+made in code, and only its own code reads its system parameters). Odoo
+started by hand without it serves the database, but the platform's old
+task AI is held off no more. The PaaS platform's own deployments do not get
+that far: they refuse to start an image that lacks the code of any
+installed module, so the site stays down until an image that carries the
+modules is used again. Once project AI is installed there, an image without
+the six modules is therefore not a rollback target; before installing,
+make sure that the image running now and the image a rollback would go
+back to both carry the six modules. Details: [docs/PAAS.md](docs/PAAS.md),
+"回復用的映像".
+
+Ship the modules together in every image that serves the database
+(rollback images included): the six (`woow_ai_task` and its five bridges)
+where the PaaS platform is installed, the other five elsewhere (the PaaS
+bridge has no use there: it installs only with the platform). A module of
+this repository that a database installs later, such as the CRM template
+(`woow_ai_task_crm`, never installed automatically), is then in every image
+that serves that database too. Without the PaaS bridge the platform's old
+task AI would answer again. Build images from a
+release tag `v<woow_ai_task version>` (`-N` when only bridges change), never
+from an untagged merge. Odoo
 installs a bridge by itself only while one of its dependencies is being
 installed; `-u`, `-u all` and *Update Apps List* never install a new module.
 So when a bridge reaches a database after `woow_ai_task` and the portal
@@ -256,8 +293,9 @@ harmless): `-i woow_ai_task_portal_discuss` where `woow_odoo_portal_discuss`
 is installed, `-i woow_ai_task_portal_notification` where
 `woow_portal_notification_discuss` is, `-i woow_ai_task_snailmail` where
 `snailmail` is, `-i woow_ai_task_document_management` where
-`woow_document_management` is (or from Apps). Never install a bridge
-where its other side is missing: that would install the other side too.
+`woow_document_management` is, `-i woow_ai_task_paas` where
+`woow_paas_platform` is (or from Apps). Never install a bridge where its
+other side is missing: that would install the other side too.
 
 Module operations from Apps or `odoo shell` (install, upgrade, uninstall:
 `button_immediate_*`) are refused while any cron of the database runs
@@ -281,13 +319,18 @@ installing the module again starts new, empty chats. The people leave all
 the chats in two statements: with 10,000 task chats and 30,030 people in
 them the hook took 3.5 s and the whole uninstall 6.5 s (member by member,
 as before, 371 s: longer than a web request may run). Uninstalling it also
-uninstalls its four bridges (`woow_ai_task_portal_discuss`,
+uninstalls its five bridges (`woow_ai_task_portal_discuss`,
 `woow_ai_task_portal_notification`, `woow_ai_task_snailmail`,
-`woow_ai_task_document_management`): they hold nothing but their code and
-one portal card, so there is nothing to restore. Only a module that
-depends on it and must stay installed (for example the PaaS platform,
-should it come to depend on it) blocks the uninstall: then forward-fix, or
-restore the database and filestore snapshot taken before the upgrade.
+`woow_ai_task_document_management`, `woow_ai_task_paas`); the PaaS platform
+stays installed. The first four hold nothing but their code and one portal
+card, so there is nothing to restore. Only a module that depends on it and
+must stay installed (for example the PaaS platform, should it come to
+depend on it) blocks the uninstall: then forward-fix, or restore the
+database and filestore snapshot taken before the upgrade. On the PaaS
+platform this is not a routine rollback step (forward-fix, or an image that
+still carries the six modules, or the snapshot taken before the install:
+docs/PAAS.md), and `woow_ai_task_paas` can never be uninstalled alone
+(refused: the old task AI would come back).
 
 `odoo-bin neutralize` (copies for testing): the AI connections lose their
 URL and key and are archived, n8n "Safe for Customers" is cleared, push keys
@@ -299,6 +342,7 @@ the module's tables are missing can still be neutralized.
 - Wire format of both backends, the push API, signed attachment URLs, reply
   rendering, usage: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - Behaviour in detail (Traditional Chinese): [docs/PROJECT.md](docs/PROJECT.md).
+- On the PaaS platform (Traditional Chinese): [docs/PAAS.md](docs/PAAS.md).
 
 ## Privacy and security
 

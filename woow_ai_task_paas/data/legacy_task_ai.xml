@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- noupdate="0": runs at install and at every upgrade (each platform release upgrades this module too).
+         It archives and restricts the platform's own "Task Chat: ..." channels not recorded yet, records
+         their old values (woow_ai_task_paas.restricted_chats), and never raises (models/project_task.py). -->
+    <data noupdate="0">
+        <function model="project.task" name="_woow_project_ai_paas_restrict_legacy_chats"/>
+    </data>
+</odoo>

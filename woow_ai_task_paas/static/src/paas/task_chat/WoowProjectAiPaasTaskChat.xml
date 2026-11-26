@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+  <t t-name="woow_ai_task_paas.WoowProjectAiPaasTaskChat">
+    <div class="o_woow_project_ai_paas_chat">
+      <p t-if="!props.info.staff" class="o_woow_project_ai_paas_note">Ask our AI assistant about this task, at any time. Your messages and files are also visible to our team and to the other people who can see this task.</p>
+      <p t-else="" class="o_woow_project_ai_paas_note">The customers of this task read this chat. A message of yours goes to them and pauses the AI for a while; the AI does not answer colleagues here.</p>
+      <p t-if="props.info.staff and props.info.readonly" class="o_woow_project_ai_paas_note o_woow_project_ai_paas_archived">This task is archived: its AI chats can only be read.</p>
+      <iframe class="o_woow_project_ai_paas_frame" t-att-src="props.info.url" title="Customer AI Chat"/>
+      <div class="o_woow_project_ai_paas_newtab">
+        <a t-att-href="props.info.url" target="_blank" rel="noopener">Open this chat in a new tab</a>
+      </div>
+    </div>
+  </t>
+</templates>

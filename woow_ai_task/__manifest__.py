@@ -60,8 +60,12 @@ Odoo modules only; it installs next to the Discuss AI modules
   counts, and the centre counts their unread messages apart (a link to the
   task); with snailmail, woow_ai_task_snailmail keeps their files out of
   letters; with woow_document_management, woow_ai_task_document_management
-  keeps them out of its filing rules. Keep the five modules together on the
-  addons path and in every image (README.md)
+  keeps them out of its filing rules; with the PaaS platform
+  (woow_paas_platform), woow_ai_task_paas puts the customer AI chat on the
+  /woow task page and switches the platform's old task AI off. Keep the
+  modules together on the addons path and in every image: the six where the
+  PaaS platform is installed, the other five elsewhere; a module of this
+  repository installed later, such as the CRM template, too (README.md)
 
 See README.md and docs/PROTOCOL.md in the repository.
     """,
