@@ -19,7 +19,7 @@ from unittest.mock import patch
 from odoo import Command
 from odoo.exceptions import AccessError, UserError
 from odoo.tests.common import HttpCase, JsonRpcException, TransactionCase, new_test_user, tagged
-from odoo.tools import mute_logger
+from odoo.tools import SQL, mute_logger
 from odoo.tools.float_utils import float_repr
 
 from odoo.addons.woow_ai_task.models.consult_mixin import LEDGER, PROFILE, consult_models
@@ -30,7 +30,7 @@ from odoo.addons.woow_ai_task.tests.consult_common import (
     ConsultFixtures, assert_consult_lockstep, assert_field_rules)
 from odoo.addons.woow_ai_task.tools.record_text import DATA_END, DATA_START
 from odoo.addons.base.models.ir_model import MODULE_UNINSTALL_FLAG
-from odoo.addons.woow_ai_task_crm import PROFILE_XMLID, ROLE_PROMPT, post_init_hook
+from odoo.addons.woow_ai_task_crm import PROFILE_XMLID, ROLE_PROMPT, post_init_hook, pre_init_hook
 from odoo.addons.woow_ai_task_crm.models.crm_lead import INTERNAL_FIELDS, LINK_FIELD, NEVER_SENT
 
 TAG_RE = re.compile(r'<<<資料開始 ([0-9a-f]{8})>>>')
@@ -756,6 +756,25 @@ class TestCrmConsultProfileSeed(CrmConsultCase):
         self.assertFalse(seed.enabled)
         self.assertEqual(seed.role_prompt, ROLE_PROMPT)
 
+    def test_install_is_refused_before_the_consultant_tables_exist(self):
+        """pre_init_hook: on a database whose woow_ai_task is still 18.0.1.0.0 (no consultant tables yet) the
+        install stops with an instruction, before any of this module's data."""
+        pre_init_hook(self.env)  # the tables exist here: nothing happens
+        cr = self.env.cr
+        original = cr.execute
+
+        def execute(query, params=None, log_exceptions=True):
+            code = query.code if isinstance(query, SQL) else query
+            if 'to_regclass' in code:
+                return original("SELECT NULL::regclass IS NOT NULL", None, log_exceptions)
+            return original(query, params, log_exceptions)
+        cr.execute = execute
+        try:
+            with self.assertRaisesRegex(UserError, 'Update Project AI first'):
+                pre_init_hook(self.env)
+        finally:
+            del cr.execute
+
     def test_setting_warnings_count_lead_readers(self):
         employees = self.env['res.users'].search([('share', '=', False)])
         readers = employees.filtered(lambda user: user.has_group('sales_team.group_sale_salesman_all_leads'))
@@ -764,6 +783,7 @@ class TestCrmConsultProfileSeed(CrmConsultCase):
         self.assertIn('Employees who read every lead (Sales: "All Documents" or Administrator), and so may use the '
                       'consultation chats of every lead: %s of %s.' % (len(readers), len(employees)), warning)
         self.assertIn("Visitors type leads' names", warning)
+        self.assertIn('not a guarantee', warning)
         self.assertIn('The Notes are not sent', warning)
         self.assertIn('Notes: not sent', self.profile.data_destination)
         Param = self.env['ir.config_parameter'].sudo()

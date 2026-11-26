@@ -10,6 +10,7 @@ commit; other processes clear theirs at their next request or cron callback,
 as for Odoo's record rules). A job never writes a profile.
 """
 
+import hashlib
 import logging
 
 from odoo import api, fields, models, tools
@@ -18,6 +19,7 @@ from odoo.exceptions import UserError, ValidationError
 from odoo.osv import expression
 
 from ..tools.urls import split_url
+from .ai_connection import BACKEND_LITELLM, BACKEND_N8N
 from .consult_mixin import (
     PROFILE, UNUSED, State, company_ids, consult_models, consult_state, is_consult_model, model_tabs)
 from .project_project import TAB_CUSTOMER, TAB_INTERNAL
@@ -34,6 +36,11 @@ PROJECT_MANAGER_GROUP = 'project.group_project_manager'
 # Odoo 18 (base_setup): while this system parameter is on, the default user template's groups reach new and
 # existing employees (Settings > Users > Default Access Rights)
 DEFAULT_RIGHTS_PARAM = 'base_setup.default_user_rights'
+
+
+def _digest(text):
+    """16 hex characters of the SHA-256 of `text`: compares a URL or a model name without storing it."""
+    return hashlib.sha256((text or '').encode('utf-8')).hexdigest()[:16]
 
 
 class WoowProjectAiConsultProfile(models.Model):
@@ -67,21 +74,24 @@ class WoowProjectAiConsultProfile(models.Model):
         string='Send the Notes', default=False, copy=False,
         help="Send these records' long free texts (for leads: the Notes) to the AI. They hold whatever was typed "
              "into them, by visitors too: contact details, a whole Live Chat conversation, a web form's extra "
-             "fields. E-mail addresses, phone numbers and IP addresses are masked; names and postal addresses are "
-             "not.")
+             "fields. E-mail addresses, phone numbers and IP addresses are masked by patterns, which is not a "
+             "guarantee; names and postal addresses are not masked. Read at every question: switching it off "
+             "applies to the next question.")
     no_data_tools = fields.Boolean(
         string='This connection has no tools that read company data', compute='_compute_no_data_tools',
         inverse='_inverse_no_data_tools',
         help='Confirm that the AI behind the consultation project (its n8n workflow, its LiteLLM proxy or model) '
              'has no tool that reads Odoo or other company data with credentials of its own: such a tool is not '
              'limited to what the asker may read, and the records\' text, which visitors may have typed, can steer '
-             'it. Required to enable. Ticking it confirms where the data goes now (the assistant, its connection '
-             'and its backend host); when that changes, it is cleared and the AI consultant pauses for these '
-             'records until a system administrator ticks it again.')
+             'it. Required to enable. Saving the tick confirms where the data goes at that moment (the assistant, '
+             'its connection and kind, the backend host and port, the n8n workflow URL or the LiteLLM model): check '
+             '"Data Goes To" again after saving. When any of them changes, the tick is cleared and the AI consultant '
+             'pauses for these records until a system administrator ticks it again; a new key alone does not.')
     destination_fingerprint = fields.Char(
         string='Confirmed Destination', readonly=True, copy=False,
         help='Where the data went when a system administrator last ticked "This connection has no tools that read '
-             'company data": the AI assistant, its connection, its kind and its backend host.')
+             'company data": the AI assistant, its connection and kind, the backend host and port, and a hash of '
+             'the n8n workflow URL or of the LiteLLM model.')
     destination_changed = fields.Boolean(
         string='Destination Changed', compute='_compute_destination_changed',
         help='Where the record data would go now differs from what a system administrator confirmed: the AI '
@@ -124,8 +134,8 @@ class WoowProjectAiConsultProfile(models.Model):
             backend = backends.get(assistant.connection_id.backend_type) or ''
             text = '%s (%s)' % (assistant.name, backend) if backend else assistant.name
             if profile._woow_project_ai_consult_has_notes():
-                text = '%s; %s' % (text, _('Notes: sent, contact details masked') if profile.send_notes
-                                   else _('Notes: not sent'))
+                text = '%s; %s' % (text, _('Notes: sent, contact details masked by patterns (not a guarantee)')
+                                   if profile.send_notes else _('Notes: not sent'))
             profile.data_destination = text
 
     @api.depends('project_id', 'model_id', 'enabled', 'send_notes', 'destination_fingerprint',
@@ -144,7 +154,8 @@ class WoowProjectAiConsultProfile(models.Model):
                 lines.append(_('Where the record data goes changed after a system administrator confirmed it (now: '
                                '%(now)s). The AI consultant is paused for these records until a system administrator '
                                'checks that AI and ticks "This connection has no tools that read company data" '
-                               'again.', now=profile.data_destination or '-'))
+                               "again; questions asked in existing consultation chats still carry the task's name, "
+                               "which carries the record's name.", now=profile.data_destination or '-'))
             if project or profile.project_from_record:
                 # product decision: the task names carry the record's name (consult_mixin, _consult_task_name)
                 lines.append(_("The names of consultation tasks carry the record's name (renaming the record later "
@@ -183,8 +194,9 @@ class WoowProjectAiConsultProfile(models.Model):
                 if profile.send_notes:
                     lines.append(_("The Notes are sent: they hold whatever was typed into them, by visitors too "
                                    "(contact details, a whole Live Chat conversation, a web form's extra fields and "
-                                   "metadata). E-mail addresses, phone numbers and IP addresses are masked before "
-                                   "they reach the AI; names and postal addresses are not."))
+                                   "metadata). E-mail addresses, phone numbers and IP addresses are masked by "
+                                   "patterns before they reach the AI, which is not a guarantee; names and postal "
+                                   "addresses are not masked."))
                 else:
                     lines.append(_('The Notes are not sent ("Send the Notes" is off).'))
             if consulted:
@@ -235,9 +247,13 @@ class WoowProjectAiConsultProfile(models.Model):
     def _woow_project_ai_consult_destination(self):
         """The fingerprint of where the record data goes now: the
         consultation project's internal AI assistant, its connection, the
-        connection's kind and its backend host ('none' without an assistant;
-        'project-from-record' when each record chooses its project: that
-        module answers for its projects' assistants)."""
+        connection's kind, its backend host and port, and a hash of what
+        picks the workflow or the model behind that host (n8n: the whole
+        endpoint URL, as ai_connection._workflow_changes treats it; LiteLLM:
+        the model name). No URL, model or key is stored; a new key alone
+        changes nothing. 'none' without an assistant; 'project-from-record'
+        when each record chooses its project (that module answers for its
+        projects' assistants)."""
         self.ensure_one()
         if self.project_from_record:
             return 'project-from-record'
@@ -246,10 +262,17 @@ class WoowProjectAiConsultProfile(models.Model):
         if not assistant:
             return 'none'
         connection = assistant.sudo().connection_id
-        parts = split_url(connection.endpoint_url or '')
-        host = (parts.hostname or '').lower() if parts else ''
-        return 'assistant:%s;connection:%s;kind:%s;host:%s' % (
-            assistant.id, connection.id, connection.backend_type or '', host)
+        url = (connection.endpoint_url or '').strip()
+        parts = split_url(url)
+        host = (parts.netloc or '').lower() if parts else ''
+        kind = connection.backend_type or ''
+        if kind == BACKEND_N8N:
+            target = 'url:%s' % _digest(url)
+        elif kind == BACKEND_LITELLM:
+            target = 'model:%s' % _digest((connection.model or '').strip())
+        else:
+            target = ''
+        return 'assistant:%s;connection:%s;kind:%s;host:%s;%s' % (assistant.id, connection.id, kind, host, target)
 
     def _woow_project_ai_consult_destination_changed(self):
         """Whether where the data goes now differs from what a system
@@ -267,7 +290,7 @@ class WoowProjectAiConsultProfile(models.Model):
     @api.depends('destination_fingerprint', 'project_id', 'project_id.woow_project_ai_internal_assistant_id')
     def _compute_no_data_tools(self):
         # ticked only while it confirmed the destination of now: any change of the assistant, its connection or
-        # its host clears it
+        # its host/port, n8n workflow URL or LiteLLM model clears it
         for profile in self:
             profile.no_data_tools = not profile._woow_project_ai_consult_destination_changed()
 
@@ -405,6 +428,20 @@ class WoowProjectAiConsultProfile(models.Model):
             profile_project_ids=frozenset(projects),
             notes_models=frozenset(name for name in notes if name in mixin),
         )
+
+    @api.model
+    def _woow_project_ai_consult_live_models(self):
+        """(enabled models, models whose Notes are sent), read from the table
+        now and not from the registry-cached state: a request's record data
+        follows a switch-off at once, also in a process (the AI cron's
+        dispatcher pass) whose cached state is older. One query."""
+        self.flush_model(['model', 'enabled', 'send_notes'])
+        self.env.cr.execute("SELECT model, enabled, send_notes FROM woow_project_ai_consult_profile "
+                            "WHERE model IS NOT NULL")
+        rows = self.env.cr.fetchall()
+        mixin = consult_models(self.env)
+        return (frozenset(model for model, enabled, _notes in rows if enabled and model in mixin),
+                frozenset(model for model, _enabled, notes in rows if notes and model in mixin))
 
     # --- Preview ---
 

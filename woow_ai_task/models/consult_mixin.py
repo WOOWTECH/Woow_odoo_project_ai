@@ -74,6 +74,9 @@ MAX_RELATED_NAMES = 10
 FREE_TEXT_TYPES = frozenset(('char', 'text', 'html', 'many2one', 'many2many', 'one2many'))
 # characters of the record's name in a consultation task's name
 MAX_TASK_NAME = 80
+# context key the consulted records' block sets for _woow_project_ai_consult_values: whether this kind's Notes are
+# sent, read from the settings at that request (the cached state of an AI worker can be older)
+NOTES_CONTEXT = 'woow_project_ai_consult_notes'
 # continuing a consultation: the newest candidate tasks looked at
 MAX_CONTINUE_CANDIDATES = 20
 
@@ -404,7 +407,10 @@ class WoowProjectAiConsultMixin(models.AbstractModel):
         record = self.with_user(user)
         names = check_field_rules(record, record._woow_project_ai_consult_fields(tab))
         details = set(record._woow_project_ai_consult_detail_fields(tab))
-        if self._name not in consult_state(self.env).notes_models:
+        notes = self.env.context.get(NOTES_CONTEXT)
+        if notes is None:
+            notes = self._name in consult_state(self.env).notes_models
+        if not notes:
             # 「送出備註」 off: the long free texts are not even read
             names = [name for name in names if name not in details]
         labels = {}

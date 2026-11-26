@@ -112,7 +112,8 @@ chat).
   of the fields the consultant module lists, read with the asker's own
   rights, as data, and only reads; long free texts (a lead's Notes) only
   while the setting sends them, and e-mail addresses, phone numbers and IP
-  addresses in the free text sent are masked. Every record sent to a chat's
+  addresses in the free text sent are masked by patterns (not a guarantee).
+  Every record sent to a chat's
   AI is recorded; from then on only people who can read every one of them
   (and the task's current consulted records) use that chat. One *AI
   Consultant Settings* row per kind of record (system administrators): its
@@ -311,7 +312,15 @@ this repository that a database installs later, such as the CRM template
 that serves that database too. Without the PaaS bridge the platform's old
 task AI would answer again. Build images from a
 release tag `v<woow_ai_task version>` (`-N` when only bridges change), never
-from an untagged merge. Odoo
+from an untagged merge.
+
+Before installing the CRM template, upgrade `woow_ai_task` to 18.0.1.1.0
+then run `-i woow_ai_task_crm`, or use both in one command
+(`-u woow_ai_task -i woow_ai_task_crm`). An earlier standalone install is
+refused, but only after Odoo installs its dependencies (including CRM if
+it was absent). Once the CRM template is installed, keep its source in
+every serving and rollback image too: seven modules on PaaS, six elsewhere.
+Odoo
 installs a bridge by itself only while one of its dependencies is being
 installed; `-u`, `-u all` and *Update Apps List* never install a new module.
 So when a bridge reaches a database after `woow_ai_task` and the portal
@@ -378,7 +387,11 @@ the module's tables are missing can still be neutralized.
   more angle brackets collapsed).
 - **CRM** (`woow_ai_task_crm`): install it on purpose, from the command line
   (`-i woow_ai_task_crm`) or when no cron is running, after `-u woow_ai_task`
-  has finished (it refuses to install before). It installs `crm` too, with
+  has finished, or together with it (`-u woow_ai_task -i woow_ai_task_crm`).
+  Run alone before the update it refuses, but only once Odoo has installed
+  its dependencies: on a database without `crm`, CRM is then installed
+  anyway (with the effect on the Sales rights described below). It installs
+  `crm` too, with
   Odoo's own CRM bridges of the apps already there (`website_crm`,
   `crm_livechat`, …). Once installed, keep it in every image that serves the
   database. Its setting is created switched off at install (a setting for
@@ -417,8 +430,10 @@ the module's tables are missing can still be neutralized.
   employees, remove the Project Administrator group from them; an
   invited-users consultation project then also hides them from the other
   Project users. Deleting a record renames its consultation tasks (and the
-  names stored on their messages) to 「AI 顧問：<kind> #<id>」; merging leads
-  renames the tasks of the merged ones after the lead that stays.
+  names stored on their messages and activities) to 「AI 顧問：<kind> #<id>」;
+  merging leads renames the tasks of the merged ones after the lead that
+  stays. The tracking lines of renames people made by hand are Odoo's
+  history and stay.
 - **Notes and other free text**: long free texts (a lead's Notes) go to the
   AI only while *Send the Notes* is on (off by default). They hold whatever
   was typed: on Live Chat leads (`/lead`, the chatbot) the whole
@@ -426,8 +441,19 @@ the module's tables are missing can still be neutralized.
   form's extra fields, and the visitor's IP address and browser when the
   form's metadata is on. In every free text sent (the record's name, a lead's
   company name, campaign, source and medium names too), e-mail addresses,
-  phone numbers and IP addresses are masked (`[email]`, `[phone]`, `[IP]`);
-  names and postal addresses are not: cheap patterns, not a guarantee.
+  phone numbers and IP addresses (IPv4, IPv6) are masked (`[email]`,
+  `[phone]`, `[IP]`), also right next to Chinese words. A phone number is a
+  run of 8 to 15 digits that starts with 0, `+` or `(` or has spaces,
+  dashes, dots or parentheses in it; a plain run such as an amount or a tax
+  number (`20000000`), an amount with decimals and year-first or year-last
+  dates stay. Spaced amounts (`12 345 678`) and hyphenated references
+  (`PO-2026-1125-0042`) can still look like phone numbers and be masked.
+  E-mail matching covers ASCII and accented Latin letters; other scripts
+  and obfuscated addresses can be missed. IPv6 matching covers full and
+  compressed forms with a group before `::`; `::1` is left alone. Names and
+  postal addresses are not masked: pattern based, not a guarantee. Switching
+  the Notes or the setting off applies to the next question, also in a
+  running AI worker (both are read from the settings at each request).
 - **Multi-company**: the consultation project's company must be one of the
   allowed companies of every person who will use the consultant (otherwise
   they are told to ask a project manager). With *Project From the Record* the
@@ -444,16 +470,19 @@ the module's tables are missing can still be neutralized.
   consultation project (the one *Data Goes To* shows), or of the project the
   record itself chooses; a task linked to it in another project (created or
   moved there) gets none, while its links still decide who may use its chats.
-  A system administrator confirms it: ticking *This connection has no tools
-  that read company data* (required to enable) records the project's
-  internal assistant, its connection, the connection's kind and its backend
-  host. When any of them changes (a project manager chooses another internal
-  assistant, the connection's URL changes), the box clears, the setting shows
-  a red banner, the buttons refuse and no record data goes to any AI until a
-  system administrator checks the new AI and ticks it again. A system
-  administrator's own edit of the connection that keeps its host (another
-  URL path, model or key) does not pause it: check the AI again after such
-  an edit. Only system
+  A system administrator confirms it: saving a tick in *This connection has
+  no tools that read company data* (required to enable) records where the
+  data goes at that moment (check *Data Goes To* again after saving): the
+  project's internal assistant, its connection and kind, the backend host
+  and port, and a hash of the n8n workflow URL or of the LiteLLM model (no
+  URL, model or key is stored). When any of them changes (a project manager
+  chooses another internal assistant; an administrator points the connection
+  at another workflow, host or model), the box clears, the setting shows a
+  red banner, the buttons refuse and the consulted-record section is omitted
+  until a system administrator checks the new AI and ticks it again. Existing
+  chats still send their ordinary task summary and history, including the
+  task names that carry the masked record names. A new key alone does not
+  pause it. Only system
   administrators set the links, on create too. A setting that was ever
   enabled cannot be deleted, only disabled.
 - **n8n and LiteLLM**: when the internal AI connection is n8n, make sure the
@@ -529,8 +558,9 @@ API for consultant modules: 「穩定介面（橋接 API）」 there.
   activities), names of related records only those every other person of the
   chat can read. Long free texts (a lead's Notes, which can hold a whole Live
   Chat conversation) go only while the setting sends them; e-mail addresses,
-  phone numbers and IP addresses in the free text sent are masked, names and
-  postal addresses are not. The AI only reads. Links in its replies
+  phone numbers and IP addresses in the free text sent are masked by
+  patterns (not a guarantee), names and postal addresses are not. The AI
+  only reads. Links in its replies
   stay clickable, and files are downloaded, only for this site's hosts and
   the hosts the consulted records allow (and, for files, the connection's
   download domains too).

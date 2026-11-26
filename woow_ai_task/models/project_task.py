@@ -21,7 +21,7 @@ from odoo.tools import SQL
 from ..tools.ids import as_id, defaults_set, real_ids, require_int_ids
 from ..tools.record_text import cap, clean_data_text, field_text, json_line, mask_contacts, unique_labels
 from .consult_mixin import (
-    PROFILE, ROLE_PRIMARY, consult_keys, consult_state, is_consult_model, model_tabs, readable_ids)
+    NOTES_CONTEXT, PROFILE, ROLE_PRIMARY, consult_keys, consult_state, is_consult_model, model_tabs, readable_ids)
 from .discuss_channel import deleting, is_sync, trusted, with_sync
 from .project_project import DEFAULT_PAUSE_MINUTES, PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
@@ -658,10 +658,12 @@ class ProjectTask(models.Model):
     def _woow_project_ai_consult_rename(self, renames):
         """{task id: name}: consultation tasks renamed (their AI chats follow,
         no tracking line keeps the old name), and the record names Odoo stored
-        on the messages of the tasks and of their chats (mail.message.
-        record_name, written at post time) rewritten: a deleted record's name
-        stays nowhere the module wrote it (call logs with request content kept
-        excepted, up to 30 days)."""
+        for them rewritten: on the messages of the tasks and of their chats
+        (mail.message.record_name, written at post time) and on the tasks'
+        activities (mail.activity.res_name, computed only when the activity is
+        created). A deleted record's name stays nowhere the module wrote it
+        (call logs with request content kept excepted, up to 30 days); the
+        tracking lines of renames people made by hand are Odoo's history."""
         tasks = self.sudo().with_context(active_test=False).browse(list(renames)).exists()
         if not tasks:
             return
@@ -676,7 +678,11 @@ class ProjectTask(models.Model):
         self.env.cr.execute("""
             UPDATE mail_message m SET record_name = t.name FROM project_task t
              WHERE m.model = 'project.task' AND m.res_id = t.id AND t.id = ANY(%s)""", [tasks.ids])
+        self.env.cr.execute("""
+            UPDATE mail_activity a SET res_name = t.name FROM project_task t
+             WHERE a.res_model = 'project.task' AND a.res_id = t.id AND t.id = ANY(%s)""", [tasks.ids])
         self.env['mail.message'].invalidate_model(['record_name'])
+        self.env['mail.activity'].invalidate_model(['res_name'])
 
     # --- The AI consultant: the task form ---
 
@@ -766,11 +772,15 @@ class ProjectTask(models.Model):
         masked; long (detail) values only while the setting sends the Notes;
         related names only those every user of `audience` (the other people of
         the chat) can read too. Never the chatter, log notes, files, activities
-        or properties."""
+        or properties. Which kinds are enabled and send their Notes is read
+        from the settings now, not from the cached state: a switch-off reaches
+        the next request also in a process whose cache is older."""
         self.ensure_one()
         state = consult_state(self.env)
         if not requester or not state.enabled_models:
             return '', [], []
+        enabled, notes = self.env[PROFILE].sudo()._woow_project_ai_consult_live_models()
+        state = state._replace(enabled_models=enabled, notes_models=notes)
         targets = self._woow_project_ai_consult_targets(tab, state)
         if not targets:
             return '', [], []
@@ -784,8 +794,10 @@ class ProjectTask(models.Model):
         for record, role in targets:
             if record.id not in readable[record._name]:
                 continue
+            # (NOTES_CONTEXT: the live decision of _values; always set here, whatever the caller's context had)
             mine = record.with_user(requester).with_context(
-                active_test=False, allowed_company_ids=companies, lang=lang, tz=requester.tz or 'UTC')
+                active_test=False, allowed_company_ids=companies, lang=lang, tz=requester.tz or 'UTC',
+                **{NOTES_CONTEXT: record._name in state.notes_models})
             try:
                 kind = mine._woow_project_ai_consult_kind(lang)
                 name = mine.display_name

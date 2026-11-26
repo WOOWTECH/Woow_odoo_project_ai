@@ -10,7 +10,10 @@ ROLE_PROMPT = '你是業務顧問：根據商機資料幫業務整理重點與�
 def pre_init_hook(env):
     """Project AI's AI form consultant (woow_ai_task 18.0.1.1.0) must be in the
     database first: an image with its code serves a database still at
-    18.0.1.0.0 without the consultant's tables until `-u woow_ai_task` ran."""
+    18.0.1.0.0 without the consultant's tables until `-u woow_ai_task` ran.
+    Odoo runs this hook only after this module's dependencies are installed:
+    where crm was missing, it is installed (and stays) even when this
+    refuses."""
     env.cr.execute("SELECT to_regclass('woow_project_ai_consult_profile') IS NOT NULL")
     if not env.cr.fetchone()[0]:
         raise UserError('Update Project AI first (-u woow_ai_task, to 18.0.1.1.0), then install Project AI - CRM.')

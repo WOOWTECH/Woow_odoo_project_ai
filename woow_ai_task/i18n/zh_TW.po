@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 18.0-20250807\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-25 12:50+0000\n"
-"PO-Revision-Date: 2026-11-25 12:50+0000\n"
+"POT-Creation-Date: 2026-11-25 15:23+0000\n"
+"PO-Revision-Date: 2026-11-25 15:23+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -591,14 +591,17 @@ msgid ""
 "LiteLLM proxy or model) has no tool that reads Odoo or other company data "
 "with credentials of its own: such a tool is not limited to what the asker "
 "may read, and the records' text, which visitors may have typed, can steer "
-"it. Required to enable. Ticking it confirms where the data goes now (the "
-"assistant, its connection and its backend host); when that changes, it is "
-"cleared and the AI consultant pauses for these records until a system "
-"administrator ticks it again."
+"it. Required to enable. Saving the tick confirms where the data goes at that"
+" moment (the assistant, its connection and kind, the backend host and port, "
+"the n8n workflow URL or the LiteLLM model): check \"Data Goes To\" again "
+"after saving. When any of them changes, the tick is cleared and the AI "
+"consultant pauses for these records until a system administrator ticks it "
+"again; a new key alone does not."
 msgstr ""
 "確認顧問專案背後的 AI（n8n 流程、LiteLLM 代理或模型）沒有用自己的帳號讀 Odoo "
-"或其他公司資料的工具：這種工具不受提問者權限限制，而紀錄裡的文字（可能是訪客打的）可以操縱它。開啟時必勾。勾選時會記下現在的資料去處（助理、它的連線和後端主機）；去處改變時勾選會清掉，這類紀錄的"
-" AI 顧問會暫停，直到系統管理員重新勾選。"
+"或其他公司資料的工具：這種工具不受提問者權限限制，而紀錄裡的文字（可能是訪客打的）可以操縱它。開啟時必勾。勾選存檔時，確認的是存檔那一刻的資料去處（助理、它的連線和類型、後端主機和連接埠、n8n"
+" 流程網址或 LiteLLM 模型）：存檔後請再看一次「資料會送到」。其中任何一項改變，勾選就會清掉，這類紀錄的 AI "
+"顧問暫停，直到系統管理員重新勾選；只換金鑰不會。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,field_description:woow_ai_task.field_woow_project_ai_consult_profile__destination_fingerprint
@@ -1543,8 +1546,8 @@ msgstr "備註：不送"
 #. module: woow_ai_task
 #. odoo-python
 #: code:addons/woow_ai_task/models/consult_profile.py:0
-msgid "Notes: sent, contact details masked"
-msgstr "備註：送出，聯絡方式已遮蔽"
+msgid "Notes: sent, contact details masked by patterns (not a guarantee)"
+msgstr "備註：送出，聯絡方式用比對規則遮蔽（不是保證）"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -2189,10 +2192,13 @@ msgid ""
 "Send these records' long free texts (for leads: the Notes) to the AI. They "
 "hold whatever was typed into them, by visitors too: contact details, a whole"
 " Live Chat conversation, a web form's extra fields. E-mail addresses, phone "
-"numbers and IP addresses are masked; names and postal addresses are not."
+"numbers and IP addresses are masked by patterns, which is not a guarantee; "
+"names and postal addresses are not masked. Read at every question: switching"
+" it off applies to the next question."
 msgstr ""
 "把這類紀錄的長文字（商機：備註）送給 AI。裡面是任何人打的字，訪客也會打：聯絡方式、整段 Live Chat "
-"對話、網站表單的額外欄位。電子郵件、電話號碼和 IP 位址會遮蔽，人名和地址不會。"
+"對話、網站表單的額外欄位。電子郵件、電話號碼和 IP "
+"位址會用比對規則遮蔽，這不是保證；人名和地址不會遮蔽。每次提問都會重新讀取：關掉之後下一個問題就生效。"
 
 #. module: woow_ai_task
 #: model:ir.model.fields,help:woow_ai_task.field_project_project__woow_project_ai_customer_brief
@@ -2485,10 +2491,11 @@ msgid ""
 "The Notes are sent: they hold whatever was typed into them, by visitors too "
 "(contact details, a whole Live Chat conversation, a web form's extra fields "
 "and metadata). E-mail addresses, phone numbers and IP addresses are masked "
-"before they reach the AI; names and postal addresses are not."
+"by patterns before they reach the AI, which is not a guarantee; names and "
+"postal addresses are not masked."
 msgstr ""
 "備註會送出：裡面是任何人打的字，訪客也會打（聯絡方式、整段 Live Chat 對話、網站表單的額外欄位和中繼資料）。電子郵件、電話號碼和 IP "
-"位址送給 AI 前會遮蔽，人名和地址不會。"
+"位址送給 AI 前會用比對規則遮蔽，這不是保證；人名和地址不會遮蔽。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -3011,8 +3018,11 @@ msgstr "這個助理的大腦在哪裡、怎麼呼叫：後端類型、網址、
 msgid ""
 "Where the data went when a system administrator last ticked \"This "
 "connection has no tools that read company data\": the AI assistant, its "
-"connection, its kind and its backend host."
-msgstr "系統管理員上次勾「此連線沒有讀取公司資料的工具」時的資料去處：AI 助理、它的連線、連線類型和後端主機。"
+"connection and kind, the backend host and port, and a hash of the n8n "
+"workflow URL or of the LiteLLM model."
+msgstr ""
+"系統管理員上次勾「此連線沒有讀取公司資料的工具」時的資料去處：AI 助理、它的連線和類型、後端主機和連接埠，以及 n8n 流程網址或 LiteLLM "
+"模型的雜湊值。"
 
 #. module: woow_ai_task
 #. odoo-python
@@ -3021,19 +3031,23 @@ msgid ""
 "Where the record data goes changed after a system administrator confirmed it"
 " (now: %(now)s). The AI consultant is paused for these records until a "
 "system administrator checks that AI and ticks \"This connection has no tools"
-" that read company data\" again."
+" that read company data\" again; questions asked in existing consultation "
+"chats still carry the task's name, which carries the record's name."
 msgstr ""
 "紀錄資料的去處在系統管理員確認後改變了（現在：%(now)s）。這類紀錄的 AI 顧問已暫停，直到系統管理員檢查那個 "
-"AI，並重新勾「此連線沒有讀取公司資料的工具」。"
+"AI，並重新勾「此連線沒有讀取公司資料的工具」；在既有顧問對話裡的提問仍會帶著任務名稱，而任務名稱帶著紀錄名稱。"
 
 #. module: woow_ai_task
 #: model_terms:ir.ui.view,arch_db:woow_ai_task.view_woow_project_ai_consult_profile_form
 msgid ""
 "Where the record data goes changed after a system administrator confirmed it: the AI\n"
-"                        consultant is paused for these records. Check the AI behind the consultation project, then\n"
-"                        tick \"This connection has no tools that read company data\" again and save."
+"                        consultant is paused for these records (questions asked in existing consultation chats still\n"
+"                        carry the task's name, which carries the record's name). Check the AI behind the consultation\n"
+"                        project, then tick \"This connection has no tools that read company data\" again and save."
 msgstr ""
-"紀錄資料的去處在系統管理員確認後改變了：這類紀錄的 AI 顧問已暫停。請檢查顧問專案背後的 AI，再重新勾「此連線沒有讀取公司資料的工具」並存檔。"
+"紀錄資料的去處在系統管理員確認後改變了：這類紀錄的 AI "
+"顧問已暫停（在既有顧問對話裡的提問仍會帶著任務名稱，而任務名稱帶著紀錄名稱）。請檢查顧問專案背後的 "
+"AI，再重新勾「此連線沒有讀取公司資料的工具」並存檔。"
 
 #. module: woow_ai_task
 #. odoo-python

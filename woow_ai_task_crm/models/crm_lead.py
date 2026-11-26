@@ -9,7 +9,8 @@ manager all of them), never the contact fields (e-mail, phone, address,
 contact name), the chatter and its log notes, the files or the activities.
 The lead's free-text Notes (description) are sent only while the setting's
 「送出備註」 is on, with e-mail addresses, phone numbers and IP addresses
-masked. Leads have no portal access, so nothing goes to the customer tab.
+masked by patterns (not a guarantee). Leads have no portal access, so
+nothing goes to the customer tab.
 """
 
 from lxml import etree
@@ -102,8 +103,8 @@ class CrmLead(models.Model):
             lines.append(_("Default Access Rights (Settings > Users) is on: new employees get the default user "
                            "template's groups, with Odoo's template Sales Administrator too (they read every lead)."))
         lines.append(_("Visitors type leads' names, company names and campaign, source and medium names too (web "
-                       "forms, Live Chat): e-mail addresses, phone numbers and IP addresses in them are masked, "
-                       "names and postal addresses are not."))
+                       "forms, Live Chat): e-mail addresses, phone numbers and IP addresses in them are masked by "
+                       "patterns, which is not a guarantee; names and postal addresses are not masked."))
         return lines
 
     def _woow_project_ai_consult_kind(self, lang):

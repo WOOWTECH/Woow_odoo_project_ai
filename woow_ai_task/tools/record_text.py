@@ -51,19 +51,30 @@ PERSON_MODELS = frozenset(('res.users', 'res.partner'))
 BOOLEAN_TEXT = {True: '是', False: '否'}
 
 # contact details in free text (a visitor's Notes, a Live Chat transcript, a web form's extra fields) are masked
-# before they reach the AI: cheap patterns, not a guarantee (a postal address, a name stay)
+# before they reach the AI: pattern based, not a guarantee (a postal address, a name stay). Boundaries are ASCII: in
+# Python 3 \w matches CJK ideographs too, and Chinese text puts a number or an address right next to its words
 MASKED_EMAIL = '[email]'
 MASKED_PHONE = '[phone]'
 MASKED_IP = '[IP]'
-_EMAIL_RE = re.compile(r'[\w.%+-]+@[\w-]+(?:\.[\w-]+)+')
+# at most this many characters of a value are masked (and kept): every caller caps far below it, and no pattern
+# ever runs on a huge value
+MAX_MASKED_CHARS = 20000
+# Latin letters (accented ones too), digits and the usual symbols, in runs bounded as RFC 5321 bounds them (64
+# characters before the @, 63 per label after it): every start position costs a bounded number of steps
+_LATIN = 'A-Za-z0-9\u00c0-\u024f'
+_EMAIL_RE = re.compile(r'[%s._%%+-]{1,64}@[%s-]{1,63}(?:\.[%s-]{1,63})+' % (_LATIN, _LATIN, _LATIN))
 _IPV4_RE = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
-# four groups or more, or a "::" form: a time such as 10:30:00 is not one
-_IPV6_RE = re.compile(r'(?<![\w:])(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}(?![\w:])'
-                      r'|(?<![\w:])(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{0,4}(?![\w:])')
-# a run of digits with the separators of phone numbers (not '/': references such as SO/2026/00012 stay); 8 to 15
-# digits is a phone number
-_PHONE_RE = re.compile(r'(?<![\w+])\+?\(?\d[\d \t().\-]{5,}\d(?!\w)')
-_DATE_RE = re.compile(r'(?<!\d)\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?!\d)')
+# four groups or more, or a "::" form with up to six groups after it: a time such as 10:30:00 is not one
+_HEX = '[0-9A-Fa-f]{1,4}'
+_IPV6_RE = re.compile(r'(?<![A-Za-z0-9_:])(?:(?:%s:){3,7}%s|(?:%s:){1,6}:(?:%s(?::%s){0,5})?)(?![A-Za-z0-9_:])'
+                      % ((_HEX,) * 5))
+# a run of digits with the separators of phone numbers (not '/': references such as SO/2026/00012 stay); it is a
+# phone number with 8 to 15 digits that starts with 0, '+' or '(' or has separators (a plain 20000000 is an amount
+# or a tax number), unless it is an amount with decimals (1234567.00)
+_PHONE_RE = re.compile(r'(?<![A-Za-z0-9_+])\+?\(?\d[\d \t().\-]{5,}\d(?![A-Za-z0-9_])')
+_AMOUNT_RE = re.compile(r'\d+[.,]\d{1,2}')
+# dates are left alone: year first (2026-11-25) or last (25.11.2026, 11/25/2026)
+_DATE_RE = re.compile(r'(?<!\d)(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4})(?!\d)')
 
 # the JSON line of a consulted record
 KEY_KIND = '類型'
@@ -108,13 +119,15 @@ def clean_data_text(text, one_line=True):
 
 
 def mask_contacts(text):
-    """`text` with e-mail addresses, IP addresses and phone-like digit runs
-    (8 to 15 digits with spaces, dashes, dots or parentheses; dates such as
-    2026-11-25 are left alone) replaced by [email], [IP] and [phone]. Cheap
-    patterns, not a guarantee: names and postal addresses stay."""
+    """`text` (its first MAX_MASKED_CHARS characters) with e-mail addresses,
+    IP addresses (IPv4, IPv6) and phone numbers replaced by [email], [IP] and
+    [phone]. A phone number is a run of 8 to 15 digits with spaces, dashes,
+    dots or parentheses that starts with 0, '+' or '(' or has separators;
+    dates (2026-11-25, 25.11.2026) and amounts with decimals are left alone.
+    Pattern based, not a guarantee: names and postal addresses stay."""
     if not text:
         return text or ''
-    text = text.replace('\x00', '')  # (the placeholder of the dates below)
+    text = text[:MAX_MASKED_CHARS].replace('\x00', '')  # (\x00: the placeholder of the dates below)
     text = _EMAIL_RE.sub(MASKED_EMAIL, text)
     text = _IPV4_RE.sub(MASKED_IP, text)
     text = _IPV6_RE.sub(MASKED_IP, text)
@@ -126,8 +139,9 @@ def mask_contacts(text):
 
     def phone(match):
         run = match.group(0)
-        digits = sum(char.isdigit() for char in run)
-        return MASKED_PHONE if 8 <= digits <= 15 else run
+        if not 8 <= sum(char.isdigit() for char in run) <= 15 or _AMOUNT_RE.fullmatch(run):
+            return run
+        return MASKED_PHONE if run[0] in '0+(' or not run.isdigit() else run
 
     text = _PHONE_RE.sub(phone, _DATE_RE.sub(keep_date, text))
     return re.sub('\x00(\\d+)\x00', lambda match: dates[int(match.group(1))], text)

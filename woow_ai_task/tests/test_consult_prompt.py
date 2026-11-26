@@ -8,6 +8,7 @@ links and downloads of replies in consulted chats; logs without values."""
 import json
 import logging
 import re
+import time
 from unittest.mock import patch
 
 from odoo import Command, fields
@@ -15,6 +16,7 @@ from odoo import Command, fields
 from odoo.addons.woow_ai_task.models import discuss_channel as channel_module
 from odoo.addons.woow_ai_task.models import project_task as task_module
 from odoo.addons.woow_ai_task.tests.common import BACKEND_POST, MEDIA_GET, TINY_PDF, http_response, openai_ok
+from odoo.addons.woow_ai_task.tools import record_text
 from odoo.addons.woow_ai_task.tools.record_text import (
     CONSULT_DATA_NOTE, DATA_END, DATA_START, clean_data_text, mask_contacts, one_line_name)
 from odoo.tests.common import tagged
@@ -253,7 +255,9 @@ class TestConsultPrompt(StandinCase):
         self.partner_a.write({
             'name': 'Lead Partner A 0912-345-678',
             'function': 'Buyer wang@example.com',
-            'comment': '<p>Call 0912-345-678 or wang@example.com</p><p>from 192.168.10.20</p>',
+            'comment': '<p>Call 0912-345-678 or wang@example.com</p><p>from 192.168.10.20</p>'
+                       '<p>我電話是0912345678請回電，信箱wang@example.com請寄報價</p>'
+                       '<p>IP : 2001:db8::8a2e:370:7334</p>',
         })
         self.link(self.task, partner_id=self.partner_a.id)
         _channel, body = self.ask()
@@ -267,7 +271,9 @@ class TestConsultPrompt(StandinCase):
         notes = self.consult_lines(system)[0]['欄位']['Notes']
         self.assertIn('Call [phone] or [email]', notes)
         self.assertIn('from [IP]', notes)
-        for absent in ('0912', 'wang@example.com', '192.168'):
+        self.assertIn('我電話是[phone]請回電,信箱[email]請寄報價', notes)
+        self.assertIn('IP : [IP]', notes)
+        for absent in ('0912', 'wang@example.com', '192.168', '2001:db8'):
             self.assertNotIn(absent, system)
 
     def test_a_look_alike_section_in_the_description_is_only_text(self):
@@ -294,11 +300,13 @@ class TestConsultPrompt(StandinCase):
     def test_no_record_data_until_a_new_destination_is_confirmed(self):
         profile = self.enable('res.partner')
         self.link(self.task, partner_id=self.partner_a.id)
+        self.task.name = self.partner_a._woow_project_ai_consult_task_name()
         # (a new host drops the saved key unless one comes with it)
         self.internal_ai.connection_id.write({'endpoint_url': 'https://other-llm.example.net/v1',
                                               'api_key': 'other-backend-key'})
         channel, body = self.ask()
         self.assertNotIn(HEADER_PREFIX, self.system(body))
+        self.assertIn(self.task.name, self.system(body), 'the task summary still carries the record-based title')
         self.assertFalse(self.ledger_rows(channel))
         # the link still decides who may use the chat
         self.assertEqual(self.task._woow_project_ai_consult_gate('internal'),
@@ -306,6 +314,23 @@ class TestConsultPrompt(StandinCase):
         profile.no_data_tools = True  # a system administrator checked the AI at the new host
         _channel, body = self.ask(text='again')
         self.assertIn(HEADER_PREFIX, self.system(body))
+
+    def test_switching_off_reaches_a_process_with_an_older_cached_state(self):
+        """The AI cron's dispatcher pass keeps the registry-cached state for its whole window: which kinds are
+        enabled and send their Notes is read from the settings at each request."""
+        profile = self.enable('res.partner', send_notes=True)
+        self.link(self.task, partner_id=self.partner_a.id)
+        stale = task_module.consult_state(self.env)
+        self.assertIn('res.partner', stale.notes_models)
+        profile.send_notes = False
+        with patch.object(task_module, 'consult_state', lambda env: stale):
+            _channel, body = self.ask()
+        fields_ = self.consult_lines(self.system(body))[0]['欄位']
+        self.assertNotIn('Notes', fields_, 'the Notes switched off: not sent, whatever the cached state says')
+        profile.enabled = False
+        with patch.object(task_module, 'consult_state', lambda env: stale):
+            _channel, body = self.ask(text='and now?')
+        self.assertNotIn(HEADER_PREFIX, self.system(body), 'the kind switched off: no record data')
 
     # --- Links and downloads of replies ---
 
@@ -423,3 +448,55 @@ class TestConsultPrompt(StandinCase):
         self.assertEqual(mask_contacts('a\x00b'), 'ab')
         self.assertEqual(mask_contacts(''), '')
         self.assertEqual(mask_contacts(None), '')
+
+    def test_mask_contacts_in_chinese_text(self):
+        """Chinese text puts a number or an address right next to its words (and \\w matches CJK ideographs):
+        the boundaries are ASCII, the words around stay."""
+        cases = {
+            '我電話是0912345678請回電': '我電話是[phone]請回電',
+            '電話0912345678': '電話[phone]',
+            '0912345678請回電': '[phone]請回電',
+            '聯絡電話0912-345-678': '聯絡電話[phone]',
+            '請撥0912 345 678謝謝': '請撥[phone]謝謝',
+            '請聯絡王小明0912345678': '請聯絡王小明[phone]',
+            '電話02-23456789分機123': '電話[phone]分機123',
+            'LINE ID是wang_xiao電話02-2345-6789': 'LINE ID是wang_xiao電話[phone]',
+            '信箱wang@example.com請寄報價': '信箱[email]請寄報價',
+            '郵件是josé@example.com，謝謝': '郵件是[email],謝謝',
+            '訪客: 你好，我想訂製廚房，我電話是0912345678，信箱wang@example.com請寄報價':
+                '訪客: 你好,我想訂製廚房,我電話是[phone],信箱[email]請寄報價',
+            'IP是192.168.1.20請確認': 'IP是[IP]請確認',
+            'IP是2001:db8::1': 'IP是[IP]',
+        }
+        for text, masked in cases.items():
+            self.assertEqual(mask_contacts(clean_data_text(text, one_line=False)), masked, text)
+
+    def test_mask_contacts_ipv6_glued_addresses_and_what_stays(self):
+        for text in ('2001:db8::8a2e:370:7334', '2a01:cb00:1234:5678::abcd:1', 'fe80::1ff:fe23:4567:890a',
+                     '2001:0db8:85a3:0000:0000:8a2e:0370:7334'):
+            self.assertEqual(mask_contacts(text), '[IP]', text)
+        self.assertEqual(mask_contacts('IP : 2001:db8:abcd:12::3:4'), 'IP : [IP]')
+        self.assertEqual(mask_contacts('a@b.c+d@e.f'), '[email][email]', 'glued addresses')
+        self.assertEqual(mask_contacts('+886912345678'), '[phone]')
+        # amounts, tax numbers, dates, times and references are not phone numbers
+        for kept in ('預算20000000元', '統編12345678', 'Order 20261125001', '1234567.00 TWD', 'NT$ 12,345,678',
+                     'installation by 25.11.2026', '11-25-2026', '2026-11-25 10:30:00', 'at 10:30:15', 'ratio 1:2',
+                     '::1'):
+            self.assertEqual(mask_contacts(kept), kept, kept)
+        # These are deliberately ambiguous: the documented pattern still treats them as phone numbers.
+        self.assertEqual(mask_contacts('12 345 678'), '[phone]')
+        self.assertEqual(mask_contacts('PO-2026-1125-0042'), 'PO-[phone]')
+
+    def test_mask_contacts_is_fast_on_huge_tokens(self):
+        """A visitor's 100 KB company name or Notes token: every pattern is linear, and at most
+        MAX_MASKED_CHARS characters are masked (every caller caps far below)."""
+        for text in ('a' * 100000, 'a' * 50000 + '@' + 'b' * 50000, 'a.' * 50000, '1' * 100000 + 'x'):
+            start = time.monotonic()
+            masked = mask_contacts(text)
+            self.assertLess(time.monotonic() - start, 2, text[:20])
+            self.assertLessEqual(len(masked), record_text.MAX_MASKED_CHARS)
+            # the patterns themselves, on the whole text
+            start = time.monotonic()
+            for pattern in (record_text._EMAIL_RE, record_text._IPV6_RE, record_text._PHONE_RE):
+                pattern.sub('x', text)
+            self.assertLess(time.monotonic() - start, 3, text[:20])

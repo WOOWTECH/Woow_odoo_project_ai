@@ -28,8 +28,9 @@
                     <field name="destination_changed" invisible="1"/>
                     <div class="alert alert-danger" role="alert" invisible="not destination_changed">
                         Where the record data goes changed after a system administrator confirmed it: the AI
-                        consultant is paused for these records. Check the AI behind the consultation project, then
-                        tick "This connection has no tools that read company data" again and save.
+                        consultant is paused for these records (questions asked in existing consultation chats still
+                        carry the task's name, which carries the record's name). Check the AI behind the consultation
+                        project, then tick "This connection has no tools that read company data" again and save.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="not warning">
                         <field name="warning" readonly="1" nolabel="1"/>

@@ -23,8 +23,8 @@ of Project AI (woow_ai_task):
   that can hold what visitors typed (a Live Chat conversation, a web form's
   extra fields): they are sent only while the setting's "Send the Notes" is
   on. E-mail addresses, phone numbers and IP addresses in the text sent are
-  masked; names and postal addresses are not. Nothing goes to the customer
-  tab
+  masked by patterns, which is not a guarantee; names and postal addresses
+  are not masked. Nothing goes to the customer tab
 * Once enabled, only people who can read the lead (Odoo's own lead rules)
   use its consultation chats; a reassigned, merged or deleted lead updates
   who may stay, and a deleted lead's consultation tasks lose its name
@@ -34,8 +34,10 @@ of Project AI (woow_ai_task):
   Users) is on, which is Odoo's default, Odoo gives every existing employee
   the groups CRM adds to the default user template, Sales Administrator
   included, who reads every lead. Review the Sales rights before enabling
-* Update Project AI (woow_ai_task 18.0.1.1.0) before installing it, and keep
-  it in every image that serves the database once installed
+* Update Project AI (woow_ai_task 18.0.1.1.0) before installing it (it
+  refuses otherwise, but by then Odoo has already installed CRM where it was
+  missing), and keep it in every image that serves the database once
+  installed
 
 See the Project AI README and docs/PROJECT.md (「AI 顧問」).
     """,

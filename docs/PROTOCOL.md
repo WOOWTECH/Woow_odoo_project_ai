@@ -118,11 +118,18 @@ AI 顧問對象（每行一筆紀錄；標記 3fa2c1d9）：
   name only, then whole lines are cut with `…（以下省略）`). Never the
   chatter, log notes, files, activities or properties of a record. Long
   values (the module's detail fields, such as a lead's Notes) only while
-  the setting's 「送出備註」 is on. In the record's name and in every free-text
-  value (text fields and names of related records), e-mail addresses, phone
-  numbers (8 to 15 digits with spaces, dashes, dots or parentheses; dates
-  are left alone) and IP addresses become `[email]`, `[phone]` and `[IP]`
-  before the cap. People's names in
+  the setting's 「送出備註」 is on (read from the settings at each request).
+  In the record's name and in every free-text value (text fields and names
+  of related records; the first 20,000 characters), e-mail addresses, phone
+  numbers (8 to 15 digits that start with 0, `+` or `(` or have spaces,
+  dashes, dots or parentheses in them; plain digit runs, amounts with
+  decimals and dates are left alone) and IPv4 and IPv6 addresses become
+  `[email]`, `[phone]` and `[IP]` before the cap, also next to Chinese
+  words (the boundaries are ASCII); pattern based, not a guarantee. Spaced
+  amounts and hyphenated references can still be masked as phone numbers.
+  E-mail matching covers ASCII and accented Latin letters, and IPv6 matching
+  leaves leading-`::` forms such as `::1` alone. People's
+  names in
   the data (assignees, a salesperson…) follow the name rule above (a name with
   an `@` is left out). LiteLLM gets the system prompt as the `system` message,
   then the identity block (every value cleaned the same way; the kind of

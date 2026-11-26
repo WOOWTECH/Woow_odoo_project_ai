@@ -194,8 +194,11 @@ class TestConsultProfile(StandinCase):
         profile.write({'enabled': True, 'no_data_tools': True})
         self.assertTrue(profile.no_data_tools)
         self.assertFalse(profile.destination_changed)
-        self.assertEqual(profile.destination_fingerprint, 'assistant:%s;connection:%s;kind:openai;host:llm.example.com'
-                         % (self.internal_ai.id, self.internal_ai.connection_id.id))
+        self.assertTrue(profile.destination_fingerprint.startswith(
+            'assistant:%s;connection:%s;kind:openai;host:llm.example.com;model:'
+            % (self.internal_ai.id, self.internal_ai.connection_id.id)), profile.destination_fingerprint)
+        for secret in ('https://', '/v1', self.internal_ai.connection_id.model or 'no-model', 'test-backend-key'):
+            self.assertNotIn(secret, profile.destination_fingerprint, 'no URL, model or key is stored')
         # the project's internal assistant changes (project managers choose it): paused until confirmed again
         self.consult_project.woow_project_ai_internal_assistant_id = self.internal_n8n
         profile.invalidate_recordset()
@@ -207,12 +210,26 @@ class TestConsultProfile(StandinCase):
             profile.write({'project_id': self.consult_project.id})  # kept enabled without the confirmation
         profile.no_data_tools = True  # a system administrator checked the new AI
         self.assertFalse(profile.destination_changed)
-        self.assertTrue(profile.destination_fingerprint.endswith(';kind:n8n;host:n8n.example.com'))
-        # the connection's backend host changes: paused again
-        self.internal_n8n.connection_id.write({'endpoint_url': 'https://other.example.net/webhook/i',
-                                               'api_key': 'other-backend-key'})
+        self.assertIn(';kind:n8n;host:n8n.example.com;url:', profile.destination_fingerprint)
+        connection = self.internal_n8n.connection_id
+        # a new key alone does not pause it (key rotation); another workflow on the same host, another port or
+        # another host does
+        connection.write({'api_key': 'rotated-backend-key'})
         profile.invalidate_recordset()
-        self.assertTrue(profile.destination_changed)
+        self.assertFalse(profile.destination_changed, 'a new key alone')
+        for url in ('https://n8n.example.com/webhook/other-workflow', 'https://n8n.example.com:8443/webhook/i',
+                    'https://other.example.net/webhook/i'):
+            connection.write({'endpoint_url': url, 'api_key': 'other-backend-key'})
+            profile.invalidate_recordset()
+            self.assertTrue(profile.destination_changed, url)
+            profile.no_data_tools = True
+            self.assertFalse(profile.destination_changed, url)
+        # LiteLLM: another model behind the same proxy pauses it too
+        self.consult_project.woow_project_ai_internal_assistant_id = self.internal_ai
+        profile.no_data_tools = True
+        self.internal_ai.connection_id.model = 'another-model'
+        profile.invalidate_recordset()
+        self.assertTrue(profile.destination_changed, 'another LiteLLM model')
         # no assistant at all is a destination as well
         self.consult_project.woow_project_ai_internal_assistant_id = False
         profile.no_data_tools = True
@@ -226,6 +243,18 @@ class TestConsultProfile(StandinCase):
         profile.write({'enabled': False, 'no_data_tools': False})
         self.assertFalse(profile.destination_fingerprint)
         self.assertFalse(profile.destination_changed, 'only an enabled setting is paused')
+
+    def test_create_enabled_needs_the_confirmation_too(self):
+        """The explicit check after create (an @api.constrains on enabled would run before no_data_tools'
+        inverse)."""
+        model_id = self.env['ir.model']._get('res.partner').id
+        with self.assertRaises(ValidationError) as caught, self.env.cr.savepoint():
+            self.env[PROFILE].create({'model_id': model_id, 'project_id': self.consult_project.id, 'enabled': True})
+        self.assertIn('no tools that read company data', str(caught.exception))
+        profile = self.env[PROFILE].create({'model_id': model_id, 'project_id': self.consult_project.id,
+                                            'enabled': True, 'no_data_tools': True})
+        self.assertTrue(profile.enabled)
+        self.assertFalse(profile.destination_changed)
 
     def test_notes_are_off_by_default_and_said_so(self):
         profile = self.enable('res.partner')
@@ -534,7 +563,10 @@ class TestConsultTaskPage(StandinCase):
         chat = self.open_tab(self.staff, 'internal')
         self.post(chat, self.staff, 'question')
         self.task.message_post(body='a note', message_type='comment', subtype_xmlid='mail.mt_note')
+        activity = self.task.activity_schedule('mail.mail_activity_data_todo', summary='Call back',
+                                               user_id=self.staff.id)
         old = self.task.name
+        self.assertEqual(activity.res_name, old)
         self.env['project.task']._woow_project_ai_consult_rename({self.task.id: 'AI consultation: Contact #7'})
         self.assertEqual(self.task.name, 'AI consultation: Contact #7')
         self.assertIn('AI consultation: Contact #7', chat.sudo().name)
@@ -549,6 +581,7 @@ class TestConsultTaskPage(StandinCase):
         self.assertFalse(self.env['mail.tracking.value'].sudo().search([
             ('mail_message_id.model', '=', 'project.task'), ('mail_message_id.res_id', '=', self.task.id),
             ('old_value_char', '=', old)]), 'no tracking line keeps the old name')
+        self.assertEqual(activity.res_name, 'AI consultation: Contact #7', "the activity's stored name too")
 
     def test_field_rules(self):
         assert_field_rules(self, [self.staff, self.manager, self.employee], models=['res.partner', 'project.tags'])

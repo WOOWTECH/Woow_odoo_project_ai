@@ -59,7 +59,8 @@ Odoo modules only; it installs next to the Discuss AI modules
   the listed fields, read with the asker's own rights, framed as data; long
   free texts (a lead's Notes) only while the setting sends them; e-mail
   addresses, phone numbers and IP addresses in the free text sent are
-  masked. The records sent are recorded per chat, and from then on only
+  masked by patterns (not a guarantee). The records sent are recorded per
+  chat, and from then on only
   people who can read every one of them (and the task's current consulted
   records) use that chat. "AI Consultant Settings" (system administrators):
   one per kind of record, its consultation project and role prompt, the
