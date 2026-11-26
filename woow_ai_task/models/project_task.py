@@ -10,16 +10,25 @@ task write can point a tab at another conversation."""
 
 import logging
 
+from lxml import etree
+
 from markupsafe import Markup
 
 from odoo import Command, api, fields, models
 from odoo.exceptions import AccessError, MissingError, UserError
+from odoo.tools import SQL
 
-from ..tools.ids import as_id, require_int_ids
-from .discuss_channel import deleting, html_to_text, is_sync, one_line_name, trusted, with_sync
+from ..tools.ids import as_id, defaults_set, real_ids, require_int_ids
+from ..tools.record_text import cap, clean_data_text, field_text, json_line, mask_contacts, unique_labels
+from .consult_mixin import (
+    NOTES_CONTEXT, PROFILE, ROLE_PRIMARY, consult_keys, consult_state, is_consult_model, model_tabs, readable_ids)
+from .discuss_channel import deleting, is_sync, trusted, with_sync
 from .project_project import DEFAULT_PAUSE_MINUTES, PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL, TABS
 
 _logger = logging.getLogger(__name__)
+
+# (db, field) of link specs that are not stored links to a consulted model, logged once per process
+_spec_errors_logged = set()
 
 # Task summary sent to the AI (system prompt), read with the asker's own rights.
 # Internal chat: these fields; customer chat: those of them in Odoo's portal
@@ -37,8 +46,6 @@ CONTEXT_LABELS = {
 CONTEXT_HEADER = '這張任務的資料（依提問者本人的權限讀取；不含留言與內部記錄）：'
 MAX_CONTEXT_CHARS = 8000
 MAX_RELATED_NAMES = 50
-# people among the related records: their names by the name rule of the identity block (one_line_name)
-PERSON_MODELS = ('res.users', 'res.partner')
 TRUNCATED = '…（以下省略）'
 ACCESS_FIELDS = {'project_id', 'active', 'user_ids', 'company_id', 'parent_id'}
 # written by this module only (refused in create / write otherwise, default_* context keys included)
@@ -48,6 +55,20 @@ CHANNEL_FIELDS = {'woow_project_ai_internal_channel_id', 'woow_project_ai_custom
 ALERT_HANDOFF = 'handoff'
 ALERT_BLOCKED = 'blocked'
 ALERT_FAILED = 'failed'
+
+# the AI consultant (models/consult_mixin.py): the flag of a consultation task, set by 「詢問 AI 顧問」 only
+CONSULT_ENTRY_FIELD = 'woow_project_ai_consult_entry'
+# the consulted records sent with a question: at most 5 per model and 8 in all; caps of one value, of one long
+# (detail) value and of the whole block, then the trim ladder (_woow_project_ai_consult_lines)
+CONSULT_MAX_PER_MODEL = 5
+CONSULT_MAX_RECORDS = 8
+CONSULT_MAX_VALUE = 300
+CONSULT_MAX_DETAIL = 1500
+CONSULT_MAX_CHARS = 6000
+# the title of the consulted records' section carries the request's tag (record_text.CONSULT_DATA_NOTE): text
+# imitating the section (a task description) cannot know it
+CONSULT_HEADER = 'AI 顧問對象（每行一筆紀錄；標記 %s）：'
+CONSULT_ROLE_LABELS = {ROLE_PRIMARY: '主要', 'extra': '其他'}
 
 
 class ProjectTask(models.Model):
@@ -68,6 +89,16 @@ class ProjectTask(models.Model):
         groups='base.group_user',
         help='The open To-Do of the last time the customer AI chat needed a person (the customer asked for one, '
              'or the AI could not answer a customer): at most one at a time.')
+    # the AI consultant (no default: adding the column does not rewrite the table)
+    woow_project_ai_consult_entry = fields.Boolean(
+        string='AI Consultation Topic', readonly=True, copy=False, groups='base.group_user',
+        help='Created by "Ask the AI Consultant" on a record: the button continues the latest open one of these.')
+    woow_project_ai_consult_summary = fields.Text(
+        string='AI Consultant Records', compute='_compute_woow_project_ai_consult_summary',
+        groups=PROJECT_USER_GROUP)
+    woow_project_ai_consult_show = fields.Boolean(
+        string='Show the AI Consultant Records', compute='_compute_woow_project_ai_consult_show',
+        groups=PROJECT_USER_GROUP)
 
     @api.depends('project_id', 'project_id.woow_project_ai_internal_assistant_id',
                  'project_id.woow_project_ai_customer_assistant_id', 'project_id.privacy_visibility')
@@ -106,15 +137,30 @@ class ProjectTask(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         vals_list = list(vals_list)  # any iterable (a one-shot generator too): read again below
-        if not is_sync(self.env) and any((GUARDED_FIELDS | CHANNEL_FIELDS) & set(vals) for vals in vals_list):
+        sync = is_sync(self.env)
+        if not sync and any((GUARDED_FIELDS | CHANNEL_FIELDS) & set(vals) for vals in vals_list):
             raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the task '
                                          'itself.'))
+        if not sync and any(CONSULT_ENTRY_FIELD in vals for vals in vals_list):
+            raise AccessError(self._woow_project_ai_consult_entry_refusal())
+        # consulted-record links: checked as stored (a link given as a string or a float id, a command, a
+        # default_* key, an ir.default, a stored compute), only when something may have set one
+        guarded = [] if sync or self.env.su else [
+            spec for spec in self._woow_project_ai_consult_specs() if spec.guard and (
+                any(spec.field in vals for vals in vals_list) or defaults_set(self, (spec.field,))
+                or self._fields[spec.field].compute)]
         tasks = super().create(vals_list)
-        if not is_sync(self.env) and tasks.sudo().filtered('woow_project_ai_alert_activity_id'):
-            # set by a default (context, ir.default): the cache holds the stored value here, as Odoo's
-            # default_get turns a many2one default into an int or False (a float or a string id gives False)
-            raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the task '
-                                         'itself.'))
+        if not sync:
+            if tasks.sudo().filtered('woow_project_ai_alert_activity_id'):
+                # set by a default (context, ir.default): the cache holds the stored value here, as Odoo's
+                # default_get turns a many2one default into an int or False (a float or a string id gives False)
+                raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the '
+                                             'task itself.'))
+            if defaults_set(self, (CONSULT_ENTRY_FIELD,)) and tasks._woow_project_ai_consult_entry_stored():
+                # a default_* key or an ir.default set the flag: checked as stored
+                raise AccessError(self._woow_project_ai_consult_entry_refusal())
+            if guarded:
+                tasks._woow_project_ai_consult_check_links(guarded)
         return tasks
 
     # --- Who may be in a tab ---
@@ -126,14 +172,18 @@ class ProjectTask(models.Model):
         raise an access error)."""
         return list(user.sudo()._get_company_ids())
 
-    def _woow_project_ai_user_allowed(self, user, tab):
+    def _woow_project_ai_user_allowed(self, user, tab, consult=True, gate=None):
         """True when `user` may be in the AI conversation `tab` of this task now:
         an active user of the tab's audience (internal chat: employees with
         Project rights who can read the task's project too, as the internal
         project text the AI gets, and quotes, is the project's, and every
         project whose text an earlier answer used; customer chat: portal users
         and employees) who can read the task by Odoo's own rules (portal: the
-        portal task rules), over all of their active companies. Never sudo."""
+        portal task rules), over all of their active companies, and (the AI
+        consultant, `consult`) every record of the chat's gate set: what was
+        sent to its AI and the task's current links to records of enabled
+        kinds (_woow_project_ai_consult_user_ok; `gate`: the set when the
+        caller computed it already for this chat). Never sudo."""
         self.ensure_one()
         if not user or not user.active or user._is_public():
             return False
@@ -141,8 +191,8 @@ class ProjectTask(models.Model):
             return False
         if tab == TAB_CUSTOMER and not (user._is_internal() or user._is_portal()):
             return False
-        task = self.with_user(user).with_context(active_test=False,
-                                                 allowed_company_ids=self._woow_project_ai_company_ids(user))
+        companies = self._woow_project_ai_company_ids(user)
+        task = self.with_user(user).with_context(active_test=False, allowed_company_ids=companies)
         try:
             if not task.has_access('read'):
                 return False
@@ -154,7 +204,11 @@ class ProjectTask(models.Model):
                 chat = task.sudo()._woow_project_ai_tab_channel(TAB_INTERNAL)
                 if chat:
                     projects |= chat.woow_project_ai_brief_project_ids
-                return all(project.with_env(task.env).has_access('read') for project in projects)
+                if not all(project.with_env(task.env).has_access('read') for project in projects):
+                    return False
+            # the consulted records (nothing to check while consultation is unused: no query)
+            if consult and consult_state(self.env).used:
+                return task.sudo()._woow_project_ai_consult_user_ok(user, tab, companies, gate=gate)
             return True
         except AccessError:
             return False
@@ -205,6 +259,10 @@ class ProjectTask(models.Model):
         if not assistant:
             raise UserError(self.env._('The project of this task has no AI assistant for this tab.'))
         if not task._woow_project_ai_user_allowed(user, tab):
+            if task._woow_project_ai_user_allowed(user, tab, consult=False):
+                # the task, but not every record its AI consulted (never named here)
+                raise AccessError(self.env._('You cannot read the records this task consulted, so you cannot use '
+                                             'its AI conversation.'))
             raise AccessError(self.env._('You cannot open this AI conversation: you need access to the task.'))
         channel = task._woow_project_ai_tab_channel(tab)
         if not channel:
@@ -303,6 +361,8 @@ class ProjectTask(models.Model):
                 text = task._woow_project_ai_field_text(name, audience)
             except (AccessError, MissingError):
                 continue
+            # a value of the data section: no line breaks but the description's, no marker look-alikes
+            text = clean_data_text(text, one_line=name != 'description')
             if not text:
                 continue
             if name == 'description':
@@ -321,46 +381,13 @@ class ProjectTask(models.Model):
 
     def _woow_project_ai_field_text(self, name, audience=None):
         """One field of this task as text, read with this record's user
-        (field access checked; related records filtered by the user's own
-        access, whatever the shared cache holds, and by the access of every
-        user of ``audience``; their names as _woow_project_ai_name_text)."""
+        (tools/record_text.field_text: field access checked; related records
+        filtered by the user's own access, whatever the shared cache holds,
+        and by the access of every user of ``audience``; at most 50 names;
+        people's names by the name rule, record_text.one_line_name)."""
         self.ensure_one()
-        self.check_field_access_rights('read', [name])
-        field = self._fields[name]
-        if field.type in ('one2many', 'many2many'):
-            # read in this user's environment (record rules applied to the lines),
-            # never from a list another environment left in the shared cache,
-            # and not left there for others either
-            self.invalidate_recordset([name])
-            try:
-                records = self._woow_project_ai_shared_with(self[name]._filtered_access('read'), audience)
-                names = records[:MAX_RELATED_NAMES].mapped('display_name')
-            finally:
-                self.invalidate_recordset([name])
-            texts = [self._woow_project_ai_name_text(field, related) for related in names]
-            return '、'.join(text for text in texts if text)
-        value = self[name]
-        if field.type == 'many2one':
-            return self._woow_project_ai_name_text(
-                field, self._woow_project_ai_shared_with(value._filtered_access('read'), audience).display_name)
-        if field.type == 'html':
-            return html_to_text(value)
-        if field.type == 'datetime':
-            return fields.Datetime.context_timestamp(self, value).strftime('%Y-%m-%d %H:%M') if value else ''
-        if field.type == 'date':
-            return fields.Date.to_string(value) if value else ''
-        if field.type == 'selection':
-            return dict(field._description_selection(self.env)).get(value) or ''
-        return ' '.join(str(value or '').split())
-
-    def _woow_project_ai_name_text(self, field, name):
-        """A related record's name on its line of the summary: a person's
-        (a user, a contact) by the name rule of the identity block and the
-        history labels (one_line_name: a name its owner chose cannot start a
-        line of its own or pass for a label), any other on one line."""
-        if field.comodel_name in PERSON_MODELS:
-            return one_line_name(name)
-        return ' '.join(str(name or '').split())
+        return field_text(self, name, audience_filter=lambda records: self._woow_project_ai_shared_with(
+            records, audience), max_names=MAX_RELATED_NAMES)
 
     def _woow_project_ai_shared_with(self, records, audience):
         """Those of `records` that every user of `audience` can read too (an
@@ -372,6 +399,469 @@ class ProjectTask(models.Model):
                 allowed_company_ids=self._woow_project_ai_company_ids(member))._filtered_access('read')
             records = records.browse(readable.ids)
         return records
+
+    # --- The AI consultant: links, guards, gate (models/consult_mixin.py) ---
+
+    @api.model
+    def _woow_project_ai_consult_link_specs(self):
+        """The task fields that link consulted records (LinkSpec). None in the
+        core: each bridge returns ``super() + [LinkSpec(...)]``."""
+        return []
+
+    @api.model
+    def _woow_project_ai_consult_specs(self):
+        """The link specs naming a stored many2one or many2many of project.task
+        to a mixin model, primary first, then by sequence (others are logged
+        once and ignored)."""
+        specs = []
+        for spec in self._woow_project_ai_consult_link_specs() or ():
+            field = self._fields.get(spec.field)
+            if field and field.store and field.type in ('many2one', 'many2many') \
+                    and is_consult_model(self.env, field.comodel_name):
+                specs.append(spec)
+            else:
+                key = (self.env.cr.dbname, spec.field)
+                if key not in _spec_errors_logged:
+                    _spec_errors_logged.add(key)
+                    _logger.warning("Project AI consultant: link %s of project.task ignored (not a stored link to a "
+                                    "consulted model)", spec.field)
+        return sorted(specs, key=lambda spec: (spec.role != ROLE_PRIMARY, spec.sequence, spec.field))
+
+    def _woow_project_ai_consult_stored(self, specs):
+        """{field: {task id: {linked ids}}} of these tasks as stored (SQL after
+        a flush: never the values given, nor the cache)."""
+        result = {spec.field: {} for spec in specs}
+        ids = real_ids(self)
+        if not ids or not specs:
+            return result
+        self.flush_model([spec.field for spec in specs])
+        for spec in specs:
+            field = self._fields[spec.field]
+            if field.type == 'many2one':
+                column = SQL.identifier(field.name)
+                query = SQL("SELECT id, %s FROM project_task WHERE id = ANY(%s) AND %s IS NOT NULL", column, ids,
+                            column)
+            else:
+                query = SQL("SELECT %s, %s FROM %s WHERE %s = ANY(%s)", SQL.identifier(field.column1),
+                            SQL.identifier(field.column2), SQL.identifier(field.relation),
+                            SQL.identifier(field.column1), ids)
+            for task_id, value in self.env.execute_query(query):
+                result[spec.field].setdefault(task_id, set()).add(value)
+        return result
+
+    def _woow_project_ai_consult_check_links(self, specs, before=None):
+        """Every record these tasks now link through `specs` and did not link
+        `before` (_woow_project_ai_consult_stored) must be readable by the
+        current user in the internal sense, and the user must have the link
+        field's own groups (Odoo 18 checks them on write, not on create); the
+        error never names a record."""
+        stored = self._woow_project_ai_consult_stored(specs)
+        user = self.env.user
+        companies = self._woow_project_ai_company_ids(user) if user else []
+        for spec in specs:
+            old = (before or {}).get(spec.field) or {}
+            added = set()
+            for task_id, linked in stored[spec.field].items():
+                added |= linked - (old.get(task_id) or set())
+            if not added:
+                continue
+            self.check_field_access_rights('write', [spec.field])
+            comodel = self._fields[spec.field].comodel_name
+            if not user or added - readable_ids(self.env, comodel, added, user, TAB_INTERNAL, companies):
+                raise AccessError(self.env._('You cannot read the record you are adding, so you cannot add it to '
+                                             'the AI consultant records.'))
+
+    def _woow_project_ai_consult_entry_refusal(self):
+        return self.env._('Only "Ask the AI Consultant" marks a task as an AI consultation topic.')
+
+    def _woow_project_ai_consult_entry_stored(self):
+        """Whether one of these tasks is stored with the consultation flag set."""
+        ids = real_ids(self)
+        if not ids:
+            return False
+        self.flush_model([CONSULT_ENTRY_FIELD])
+        rows = self.env.execute_query(SQL("SELECT bool_or(woow_project_ai_consult_entry) FROM project_task "
+                                          "WHERE id = ANY(%s)", ids))
+        return bool(rows and rows[0][0])
+
+    def _woow_project_ai_consult_gate(self, tab, state=None):
+        """The gate set of this task's AI chat `tab` (as stored; not cached
+        across calls): {model: frozenset of ids} of the chat's ledger rows
+        and of the current links of the enabled models whose records go to
+        `tab`. Links are not capped (the caps apply to what is sent). Empty
+        while consultation is unused."""
+        self.ensure_one()
+        state = state or consult_state(self.env)
+        task_id = as_id(self.id)
+        if not state.used or not task_id:
+            return {}
+        self.env['discuss.channel'].flush_model(['woow_project_ai_task_id', 'woow_project_ai_tab'])
+        parts = [SQL("""
+            SELECT s.res_model, s.res_id FROM woow_project_ai_consult_sent s
+              JOIN discuss_channel c ON c.id = s.channel_id
+             WHERE c.woow_project_ai_task_id = %s AND c.woow_project_ai_tab = %s""", task_id, tab)]
+        specs = [spec for spec in self._woow_project_ai_consult_specs()
+                 if self._fields[spec.field].comodel_name in state.enabled_models
+                 and tab in model_tabs(self.env, self._fields[spec.field].comodel_name)]
+        if specs:
+            self.flush_model([spec.field for spec in specs])
+        for spec in specs:
+            field = self._fields[spec.field]
+            if field.type == 'many2one':
+                column = SQL.identifier(field.name)
+                parts.append(SQL("SELECT %s::varchar, t.%s FROM project_task t WHERE t.id = %s AND t.%s IS NOT NULL",
+                                 field.comodel_name, column, task_id, column))
+            else:
+                parts.append(SQL("SELECT %s::varchar, r.%s FROM %s r WHERE r.%s = %s", field.comodel_name,
+                                 SQL.identifier(field.column2), SQL.identifier(field.relation),
+                                 SQL.identifier(field.column1), task_id))
+        gate = {}
+        for model, res_id in self.env.execute_query(SQL(" UNION ALL ").join(parts)):
+            gate.setdefault(model, set()).add(res_id)
+        return {model: frozenset(ids) for model, ids in gate.items()}
+
+    def _woow_project_ai_consult_user_ok(self, user, tab, companies, gate=None):
+        """Whether `user` can read every record of the gate set of this task's
+        AI chat `tab` (``readable_ids``, the consulted model's one
+        readability source): a missing model or record fails, and so does a
+        ledger row of a (model, tab) the registry has no key for."""
+        self.ensure_one()
+        state = consult_state(self.env)
+        if gate is None:
+            gate = self.sudo()._woow_project_ai_consult_gate(tab, state)
+        if not gate:
+            return True
+        keys = consult_keys(self.env, state)
+        for model, ids in gate.items():
+            if (model, tab) not in keys:
+                return False
+            if ids - readable_ids(self.env, model, ids, user, tab, companies):
+                return False
+        return True
+
+    def _woow_project_ai_consult_ledger_pairs(self):
+        """(model, id) recorded in the AI chats of this task (both tabs)."""
+        self.ensure_one()
+        return self._woow_project_ai_consult_ledger_pairs_by_task().get(as_id(self.id), set())
+
+    def _woow_project_ai_consult_ledger_pairs_by_task(self):
+        """{task id: {(model, id)}} recorded in the AI chats of these tasks
+        (both tabs): one query for the recordset."""
+        task_ids = [task_id for task_id in (as_id(task.id) for task in self) if task_id]
+        if not task_ids:
+            return {}
+        self.env['discuss.channel'].flush_model(['woow_project_ai_task_id'])
+        rows = self.env.execute_query(SQL("""
+            SELECT DISTINCT c.woow_project_ai_task_id, s.res_model, s.res_id FROM woow_project_ai_consult_sent s
+              JOIN discuss_channel c ON c.id = s.channel_id
+             WHERE c.woow_project_ai_task_id = ANY(%s)""", task_ids))
+        pairs = {}
+        for task_id, model, res_id in rows:
+            pairs.setdefault(task_id, set()).add((model, res_id))
+        return pairs
+
+    # --- The AI consultant: the task page 「AI 顧問對象」 ---
+
+    @api.depends_context('uid', 'lang')
+    def _compute_woow_project_ai_consult_show(self):
+        # with sudo: whether the page has anything to say (links, chats that consulted records, a consultation
+        # project); no query unless consultation is configured
+        state = consult_state(self.env)
+        specs = self._woow_project_ai_consult_specs()
+        ledger = self.sudo()._woow_project_ai_consult_ledger_pairs_by_task() if state.used else {}
+        for task in self:
+            show = False
+            task_id = as_id(task.id)
+            if task_id:
+                task_sudo = task.sudo()
+                show = any(task_sudo[spec.field] for spec in specs) \
+                    or task_sudo.project_id.id in state.profile_project_ids or bool(ledger.get(task_id))
+            task.woow_project_ai_consult_show = show
+
+    @api.depends_context('uid', 'lang')
+    def _compute_woow_project_ai_consult_summary(self):
+        """The consulted records of the task for the current user: the links
+        (read with sudo), the names only of what the user can read, the rest
+        as a count."""
+        _ = self.env._
+        user = self.env.user
+        state = consult_state(self.env)
+        specs = self._woow_project_ai_consult_specs()
+        tasks = self.filtered(lambda task: as_id(task.id)) if specs or state.used else self.browse()
+        ledger = tasks.sudo()._woow_project_ai_consult_ledger_pairs_by_task() if state.used else {}
+        # the links and earlier records of every task first, then one readability check per model for all
+        plans, by_model = {}, {}
+        for task in tasks:
+            linked = []
+            for spec in specs:
+                for record in task.sudo()[spec.field]:
+                    if (record._name, record.id) not in {(model, res_id) for model, res_id, _role in linked}:
+                        linked.append((record._name, record.id, spec.role))
+            earlier = sorted(ledger.get(as_id(task.id), set()) - {(model, res_id) for model, res_id, _role in linked})
+            plans[task.id] = (linked, earlier)
+            for model, res_id in [(model, res_id) for model, res_id, _role in linked] + earlier:
+                by_model.setdefault(model, set()).add(res_id)
+        companies = self._woow_project_ai_company_ids(user) if user and by_model else []
+        readable = {model: readable_ids(self.env, model, ids, user, TAB_INTERNAL, companies)
+                    for model, ids in by_model.items()}
+        for task in self:
+            if task.id not in plans:
+                task.woow_project_ai_consult_summary = False
+                continue
+            linked, earlier = plans[task.id]
+            lines, hidden = [], 0
+            for model, res_id, role in linked:
+                label = task._woow_project_ai_consult_label(model, res_id, companies) \
+                    if res_id in readable[model] else None
+                if not label:
+                    hidden += 1
+                    continue
+                kind, name = label
+                if role == ROLE_PRIMARY:
+                    line = _('%(kind)s: %(name)s (primary)', kind=kind, name=name)
+                else:
+                    line = _('%(kind)s: %(name)s (other)', kind=kind, name=name)
+                if model not in state.enabled_models:
+                    line += ' ' + _('(not enabled: the AI does not read it)')
+                lines.append(line)
+            for model, res_id in earlier:
+                label = task._woow_project_ai_consult_label(model, res_id, companies) \
+                    if res_id in readable.get(model, ()) else None
+                if not label:
+                    hidden += 1
+                    continue
+                kind, name = label
+                lines.append(_('Consulted before: %(kind)s: %(name)s', kind=kind, name=name))
+            if hidden:
+                lines.append(_('Records you cannot read: %(count)s', count=hidden))
+            task.woow_project_ai_consult_summary = '\n'.join(lines) or False
+
+    def _woow_project_ai_consult_label(self, model, res_id, companies):
+        """(kind, name) of a record the current user can read, in their
+        language, read over all of their active `companies` (as the
+        readability check, whatever the company switcher selects); None when
+        it cannot be read after all."""
+        record = self.env[model].with_context(allowed_company_ids=companies, active_test=False).browse(res_id)
+        lang = self.env.lang or self.env.user.lang
+        try:
+            if is_consult_model(self.env, model):
+                kind = record._woow_project_ai_consult_kind(lang)
+            else:
+                kind = self.env['ir.model'].sudo().with_context(lang=lang)._get(model).name or model
+            return kind, record.display_name or ''
+        except (AccessError, MissingError):
+            return None
+
+    # --- The AI consultant: names ---
+
+    @api.model
+    def _woow_project_ai_consult_rename(self, renames):
+        """{task id: name}: consultation tasks renamed (their AI chats follow,
+        no tracking line keeps the old name), and the record names Odoo stored
+        for them rewritten: on the messages of the tasks and of their chats
+        (mail.message.record_name, written at post time) and on the tasks'
+        activities (mail.activity.res_name, computed only when the activity is
+        created). A deleted record's name stays nowhere the module wrote it
+        (call logs with request content kept excepted, up to 30 days); the
+        tracking lines of renames people made by hand are Odoo's history."""
+        tasks = self.sudo().with_context(active_test=False).browse(list(renames)).exists()
+        if not tasks:
+            return
+        for task in tasks:
+            with_sync(task).with_context(tracking_disable=True, mail_notrack=True).write(
+                {'name': renames[task.id]})
+        self.env.flush_all()
+        self.env.cr.execute("""
+            UPDATE mail_message m SET record_name = c.name FROM discuss_channel c
+             WHERE m.model = 'discuss.channel' AND m.res_id = c.id AND c.woow_project_ai_task_id = ANY(%s)""",
+                            [tasks.ids])
+        self.env.cr.execute("""
+            UPDATE mail_message m SET record_name = t.name FROM project_task t
+             WHERE m.model = 'project.task' AND m.res_id = t.id AND t.id = ANY(%s)""", [tasks.ids])
+        self.env.cr.execute("""
+            UPDATE mail_activity a SET res_name = t.name FROM project_task t
+             WHERE a.res_model = 'project.task' AND a.res_id = t.id AND t.id = ANY(%s)""", [tasks.ids])
+        self.env['mail.message'].invalidate_model(['record_name'])
+        self.env['mail.activity'].invalidate_model(['res_name'])
+
+    # --- The AI consultant: the task form ---
+
+    @api.model
+    def _get_view(self, view_id=None, view_type='form', **options):
+        arch, view = super()._get_view(view_id, view_type, **options)
+        if view_type == 'form':
+            self._woow_project_ai_consult_view_page(arch)
+        return arch, view
+
+    @api.model
+    def _woow_project_ai_consult_view_page(self, arch):
+        """The 「AI 顧問對象」 page of the task form, added here and not by an
+        inherited view: an image without this code (an older release, a
+        rollback image) shows the task form without it, instead of failing on
+        fields its registry does not have. After the customer AI chat's page
+        (this module's own task form); consultant modules put their link
+        fields into its group named woow_project_ai_consult_targets."""
+        anchors = arch.xpath("//page[@name='woow_project_ai_customer_chat']")
+        if not anchors or arch.xpath("//page[@name='woow_project_ai_consult']"):
+            return
+        _ = self.env._
+        page = etree.Element('page', {
+            'string': _('AI Consultant Records'), 'name': 'woow_project_ai_consult',
+            'groups': 'project.group_project_user', 'invisible': 'not woow_project_ai_consult_show'})
+        etree.SubElement(page, 'field', {'name': 'woow_project_ai_consult_show', 'invisible': '1'})
+        note = etree.SubElement(page, 'div', {'class': 'text-muted mb-2'})
+        note.text = _("When the AI answers, it reads some fields of the records below with the asker's own rights. "
+                      "Only colleagues who can read these records (including the ones this task consulted before) "
+                      "can use this task's AI chats.")
+        etree.SubElement(page, 'field', {'name': 'woow_project_ai_consult_summary', 'nolabel': '1',
+                                         'readonly': '1'})
+        etree.SubElement(page, 'group', {'name': 'woow_project_ai_consult_targets'})
+        anchors[0].addnext(page)
+
+    # --- The AI consultant: what the AI gets ---
+
+    def _woow_project_ai_consult_in_project(self, model, project):
+        """Whether records of `model` may go to the AI of a task of
+        `project`: only in the consultation project its setting chose (the
+        AI the administrator reviewed under 「資料會送到」), or in the project
+        the record itself chooses (_woow_project_ai_consult_project_from_record).
+        A task linked to a record in any other project gets no record data,
+        whoever created or moved it; its links and the records already sent
+        still decide who may use its chats."""
+        if not project:
+            return False
+        if is_consult_model(self.env, model) and self.env[model]._woow_project_ai_consult_project_from_record():
+            return True
+        profile = self.env[PROFILE].sudo().search([('model', '=', model)], limit=1)
+        if profile.project_id != project:
+            return False
+        # the AI behind the project changed after a system administrator confirmed it: no record data until one
+        # confirms again (the button refuses too)
+        return not profile._woow_project_ai_consult_destination_changed()
+
+    def _woow_project_ai_consult_targets(self, tab, state):
+        """[(record (sudo), role)]: the current links of the enabled models
+        whose records go to `tab`, primary first, then by spec sequence; at
+        most 5 per model and 8 in all."""
+        self.ensure_one()
+        task = self.sudo()
+        targets, seen, per_model = [], set(), {}
+        for spec in self._woow_project_ai_consult_specs():
+            model = self._fields[spec.field].comodel_name
+            if model not in state.enabled_models or tab not in model_tabs(self.env, model):
+                continue
+            if not self._woow_project_ai_consult_in_project(model, task.project_id):
+                continue  # a task created or moved elsewhere: that project's AI gets no record data
+            for record in task[spec.field]:
+                if len(targets) >= CONSULT_MAX_RECORDS:
+                    return targets
+                if (model, record.id) in seen or per_model.get(model, 0) >= CONSULT_MAX_PER_MODEL:
+                    continue
+                seen.add((model, record.id))
+                per_model[model] = per_model.get(model, 0) + 1
+                targets.append((record, spec.role))
+        return targets
+
+    def _woow_project_ai_consult_block(self, requester, tab, audience, tag):
+        """The consulted records for the AI of `tab`, read as `requester`
+        (with_user, never sudo; only what they can read): (block text, the
+        (model, id) of the records that have a line in it, their models in
+        order). The block's title carries `tag`, the request's delimiter tag.
+        One JSON line per record, every value cleaned and capped, e-mail
+        addresses, phone numbers and IP addresses in the name and in free text
+        masked; long (detail) values only while the setting sends the Notes;
+        related names only those every user of `audience` (the other people of
+        the chat) can read too. Never the chatter, log notes, files, activities
+        or properties. Which kinds are enabled and send their Notes is read
+        from the settings now, not from the cached state: a switch-off reaches
+        the next request also in a process whose cache is older."""
+        self.ensure_one()
+        state = consult_state(self.env)
+        if not requester or not state.enabled_models:
+            return '', [], []
+        enabled, notes = self.env[PROFILE].sudo()._woow_project_ai_consult_live_models()
+        state = state._replace(enabled_models=enabled, notes_models=notes)
+        targets = self._woow_project_ai_consult_targets(tab, state)
+        if not targets:
+            return '', [], []
+        companies = self._woow_project_ai_company_ids(requester)
+        lang = self.env['woow.project.ai.assistant']._installed_lang(requester.lang, self.env.lang)
+        readable = {}
+        for model in {record._name for record, _role in targets}:
+            ids = [record.id for record, _role in targets if record._name == model]
+            readable[model] = readable_ids(self.env, model, ids, requester, tab, companies)
+        entries = []
+        for record, role in targets:
+            if record.id not in readable[record._name]:
+                continue
+            # (NOTES_CONTEXT: the live decision of _values; always set here, whatever the caller's context had)
+            mine = record.with_user(requester).with_context(
+                active_test=False, allowed_company_ids=companies, lang=lang, tz=requester.tz or 'UTC',
+                **{NOTES_CONTEXT: record._name in state.notes_models})
+            try:
+                kind = mine._woow_project_ai_consult_kind(lang)
+                name = mine.display_name
+                values = mine._woow_project_ai_consult_values(requester, tab, audience) or []
+            except (AccessError, MissingError):
+                continue
+            notes = record._name in state.notes_models
+            entries.append({
+                'pair': (record._name, record.id),
+                'primary': role == ROLE_PRIMARY,
+                'kind': cap(clean_data_text(kind), CONSULT_MAX_VALUE),
+                'role': CONSULT_ROLE_LABELS.get(role, CONSULT_ROLE_LABELS['extra']),
+                'name': cap(mask_contacts(clean_data_text(name)), CONSULT_MAX_VALUE),
+                'values': [
+                    (cap(clean_data_text(label), CONSULT_MAX_VALUE),
+                     cap(clean_data_text(text, one_line=not is_detail),
+                         CONSULT_MAX_DETAIL if is_detail else CONSULT_MAX_VALUE),
+                     bool(is_detail))
+                    # (a module's own _values may return long values: still only while the Notes are sent)
+                    for label, text, is_detail in values if text and (notes or not is_detail)],
+            })
+        header = CONSULT_HEADER % tag
+        lines, sent = self._woow_project_ai_consult_lines(entries, header)
+        if not lines:
+            return '', [], []
+        models_ = []
+        for model, _res_id in sent:
+            if model not in models_:
+                models_.append(model)
+        return '\n'.join([header] + lines), sent, models_
+
+    @staticmethod
+    def _woow_project_ai_consult_lines(entries, header):
+        """(JSON lines, sent pairs) within CONSULT_MAX_CHARS, by the trim
+        ladder: 1. no long values of extra records; 2. no long values at all;
+        3. extra records: kind, role and name only; 4. whole lines cut, then
+        「…（以下省略）」."""
+        def render(level):
+            lines = []
+            for entry in entries:
+                values = entry['values']
+                if level >= 2 or (level >= 1 and not entry['primary']):
+                    values = [value for value in values if not value[2]]
+                if level >= 3 and not entry['primary']:
+                    values = None
+                elif values is not None:
+                    values = unique_labels(values)
+                lines.append(json_line(entry['kind'], entry['role'], entry['name'], values))
+            return lines
+
+        def size(lines):
+            return len(header) + sum(len(line) + 1 for line in lines)
+
+        lines = []
+        for level in range(4):
+            lines = render(level)
+            if size(lines) <= CONSULT_MAX_CHARS:
+                return lines, [entry['pair'] for entry in entries]
+        kept = []
+        for line in lines:
+            if size(kept + [line]) + len(TRUNCATED) + 1 > CONSULT_MAX_CHARS:
+                break
+            kept.append(line)
+        return kept + [TRUNCATED], [entry['pair'] for entry in entries[:len(kept)]]
 
     # --- The To-Do of the people in charge ---
 
@@ -427,14 +917,25 @@ class ProjectTask(models.Model):
     # --- Membership triggers ---
 
     def write(self, vals):
-        if not is_sync(self.env) and (GUARDED_FIELDS | CHANNEL_FIELDS) & set(vals):
+        sync = is_sync(self.env)
+        if not sync and (GUARDED_FIELDS | CHANNEL_FIELDS) & set(vals):
             raise AccessError(self.env._('The AI conversations and the AI To-Do of a task are managed by the task '
                                          'itself.'))
+        if not sync and CONSULT_ENTRY_FIELD in vals:
+            raise AccessError(self._woow_project_ai_consult_entry_refusal())
+        specs = self._woow_project_ai_consult_specs()
+        links = {spec.field for spec in specs} & set(vals)
+        # consulted-record links: the records added are checked as stored, before and after the write
+        guarded = [spec for spec in specs if spec.guard and spec.field in vals] if links and not (
+            sync or self.env.su) else []
+        before = self._woow_project_ai_consult_stored(guarded) if guarded else None
         moved = self.browse()
         if {'project_id', 'parent_id'} & set(vals):
             # subtasks follow their parent's project without a write of their own
             moved = self.sudo().with_context(active_test=False)._get_all_subtasks()
         res = super().write(vals)
+        if guarded:
+            self._woow_project_ai_consult_check_links(guarded, before)
         keys = set(vals)
         if 'name' in keys:
             for chat in self.env['discuss.channel']._woow_project_ai_chats_of(self):
@@ -442,6 +943,9 @@ class ProjectTask(models.Model):
         if ACCESS_FIELDS & keys:
             # the task's project, archiving, assignees or company: who may read it
             self.env['discuss.channel']._woow_project_ai_sync_tasks(self | moved)
+        elif links and consult_state(self.env).used:
+            # a consulted record linked or unlinked: who may use the task's AI chats may change
+            self.env['discuss.channel']._woow_project_ai_sync_tasks(self)
         return res
 
     def message_subscribe(self, partner_ids=None, subtype_ids=None):

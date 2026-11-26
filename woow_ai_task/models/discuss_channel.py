@@ -45,12 +45,9 @@ labelled. A tab whose assistant cannot answer (see
 one short notice per blocked period.
 """
 
-import html as html_lib
 import logging
-import re
 import threading
 import time
-import unicodedata
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 
@@ -68,18 +65,18 @@ from odoo.addons.mail.tools.discuss import Store
 
 from ..tools.ids import as_id, defaults_set, real_ids
 from ..tools.logs import log_unexpected
+from ..tools.record_text import (  # noqa: F401 - html_to_text and one_line_name are imported from here too
+    clean_data_text, data_section, delimiter_tag, html_to_text, one_line_name,
+)
+from ..tools.urls import split_url
+from .consult_mixin import (
+    LEDGER, PROFILE, consult_keys, consult_state, is_consult_model, model_tabs, readable_query)
 from .project_project import PROJECT_USER_GROUP, TAB_CUSTOMER, TAB_INTERNAL
 
 _logger = logging.getLogger(__name__)
 
-_BREAK_RE = re.compile(r'<\s*(br|/p|/div|/li|/tr|/h\d)\s*/?\s*>', re.IGNORECASE)
-_CELL_RE = re.compile(r'<\s*/t[dh]\s*>', re.IGNORECASE)
-_TAG_RE = re.compile(r'<[^>]+>')
-
 MAX_MESSAGE_TEXT = 16000  # characters of one history message sent to a backend
 TRUNCATED_MARKER = '\n…[truncated]'
-MAX_AUTHOR_NAME = 80  # characters of an author name in the history
-_ANGLE_RUN_RE = re.compile(r'<{3,}|>{3,}')
 
 # The context value of this module's own membership changes. An object, so a
 # client cannot forge it (JSON-RPC contexts only carry JSON values), like
@@ -166,6 +163,10 @@ STAFF_SYSTEM_NOTE = (
     '不要推翻、否認或更改同事的說法與承諾；需要時請客戶等同事處理。'
 )
 BRIEF_HEADER = '專案說明（專案經理提供）：'
+# the AI consultant: the role prompts of the consulted kinds of record (internal chat only)
+CONSULT_ROLE_HEADER = '顧問角色說明（系統管理員設定）：'
+CONSULT_MAX_ROLES = 3
+CONSULT_MAX_ROLE_CHARS = 1000
 
 ALERT_BLOCKED = 'blocked'  # project.task._woow_project_ai_alert_activity
 
@@ -187,24 +188,6 @@ MEMBER_WRITABLE_FIELDS = {'name', 'description'}
 CRON_BATCH = 200
 
 
-def one_line_name(value):
-    """A person's name as the AI reads it (history labels, the identity block
-    of the instructions, the people of the task summary): NFKC, every white
-    space run one space, no other control or format character (zero-width,
-    bidirectional marks), runs of three or more < or > as one, [ and ] as
-    ( and ), at most 80 characters; a name with an '@' (a partner named
-    after an e-mail address) counts as no name: '' (contract 3.7, 3.14).
-    A name is any text its owner chose: only its first 1,000 characters are
-    read (NFKC makes a character at most 18 long; 80 are kept)."""
-    text = ' '.join(unicodedata.normalize('NFKC', str(value or '')[:1000]).split())
-    if '@' in text:
-        return ''
-    text = ''.join(c for c in text if unicodedata.category(c) not in ('Cc', 'Cf'))
-    text = _ANGLE_RUN_RE.sub(lambda match: match.group(0)[0], text)
-    text = ' '.join(text.replace('[', '(').replace(']', ')').split())
-    return text[:MAX_AUTHOR_NAME]
-
-
 def speaker_label(kind, name):
     """The system's label before a person's text in the history (contract
     3.14): ``[<kind> <name>] ``, ``[<kind>] `` without a name; `kind` '' (the
@@ -214,13 +197,10 @@ def speaker_label(kind, name):
     return '[%s] ' % ' '.join(parts) if parts else ''
 
 
-def html_to_text(body):
-    """Message HTML -> plain text, keeping line breaks."""
-    text = _BREAK_RE.sub('\n', str(body or ''))
-    text = _CELL_RE.sub(' | ', text)
-    text = html_lib.unescape(_TAG_RE.sub('', text))
-    text = re.sub(r'[ \t]+\n', '\n', text)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
+def gate_kwargs(gate):
+    """The ``gate`` argument of the people checks, only when the AI consultant
+    computed one (it is used): unused, the checks run exactly as without it."""
+    return {} if gate is None else {'gate': gate}
 
 
 def with_sync(records):
@@ -414,6 +394,8 @@ class DiscussChannel(models.Model):
                 "(SELECT woow_project_ai_task_id FROM discuss_channel WHERE woow_project_ai_task_id IS NOT NULL)"))
             flush = {(field.model_name, field.name) for field in sql.to_flush}
             flush.add(('discuss.channel', 'woow_project_ai_brief_project_ids'))  # raw SQL above: not in to_flush
+            if consult_state(self.env).used:
+                flush.update(tuple(pair) for pair in self._woow_project_ai_consult_rule_fields())
             return {'admin': True, 'ids': ids, 'code': self.env.cr.mogrify(sql.code, sql.params).decode(),
                     'flush': sorted(flush)}
         except psycopg2.Error:
@@ -471,6 +453,15 @@ class DiscussChannel(models.Model):
         channels = ['&', ('woow_project_ai_task_id', '!=', False)] + domain
         if restrict_to is not None:
             channels = ['&', ('id', 'in', restrict_to)] + channels
+        # the AI consultant: not the chats with a consulted record the user cannot read (uncorrelated sub-queries,
+        # each built once per statement), in every arm of the rule (member chats, administrators' compiled code and
+        # point checks); nothing at all while consultation is unused
+        consult = self._woow_project_ai_consult_rule_domain(
+            Task.env.user, Task.env.context.get('allowed_company_ids') or [], restrict_to=restrict_to)
+        if consult:
+            for model_name, field_name in self._woow_project_ai_consult_rule_fields():
+                self.env[model_name].flush_model([field_name])  # raw SQL in the terms: not in to_flush
+            channels = expression.AND([channels, consult])
         # sudo: the rules are in the sub-queries above
         return self.sudo().with_context(active_test=False)._search(channels).select()
 
@@ -481,6 +472,120 @@ class DiscussChannel(models.Model):
         sql = self._woow_project_ai_readable_chats_sql(terms, SQL(
             "(SELECT woow_project_ai_task_id FROM discuss_channel WHERE id = ANY(%s))", chat_ids), restrict_to=chat_ids)
         return sorted(row[0] for row in self.env.execute_query(sql))
+
+    @api.model
+    def _woow_project_ai_consult_rule_domain(self, user, companies, restrict_to=None):
+        """The AI consultant's part of `user`'s rule (ANDed into
+        _woow_project_ai_readable_chats_sql): [] while consultation is unused; otherwise
+        no chat with a ledger row of a record `user` may not read for the
+        chat's tab (or of a (model, tab) the registry has no key for: fails
+        closed), and no chat whose task links a record of an enabled kind for
+        that tab that `user` may not read. Every record's readability is the
+        model's one source (consult_mixin.readable_query), compiled into SQL,
+        not executed: the same answer as the record predicate
+        (project.task._woow_project_ai_consult_user_ok). Only uncorrelated
+        sub-queries (no 'any', no many2many 'in' with a Query): PostgreSQL
+        hashes each once per statement instead of running it per row.
+
+        With `restrict_to` (channel ids: a member list or a point check) the
+        sub-queries are limited to the ledger rows of those chats and the
+        records linked to their tasks (PostgreSQL may still scan a small table
+        whole where that is cheaper); without it (the administrators' compiled
+        rule) they take every ledger row and every linked record."""
+        state = consult_state(self.env)
+        if not state.used:
+            return []
+        keys = sorted(consult_keys(self.env, state))
+        restricted = restrict_to is not None
+        chat_ids = sorted({chat_id for chat_id in restrict_to or () if isinstance(chat_id, int)})
+        branches = []
+        for model, tab in keys:
+            if restricted:
+                candidates = SQL("(SELECT res_id FROM woow_project_ai_consult_sent WHERE res_model = %s "
+                                 "AND channel_id = ANY(%s))", model, chat_ids)
+            else:
+                candidates = SQL("(SELECT res_id FROM woow_project_ai_consult_sent WHERE res_model = %s)", model)
+            readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
+            if readable is None:
+                branches.append(SQL("(c.woow_project_ai_tab = %s AND s.res_model = %s)", tab, model))
+            else:
+                # NOT COALESCE(... IN R, FALSE), not NOT IN R: a NULL in a hook's R must not open the chat
+                branches.append(SQL("(c.woow_project_ai_tab = %s AND s.res_model = %s "
+                                    "AND NOT COALESCE(s.res_id IN %s, FALSE))", tab, model, readable))
+        if keys:
+            branches.append(SQL("((s.res_model, c.woow_project_ai_tab) NOT IN (VALUES %s))",
+                                SQL(", ").join(SQL("(%s, %s)", model, tab) for model, tab in keys)))
+        else:
+            branches.append(SQL("TRUE"))
+        ledger_chats = SQL(" AND s.channel_id = ANY(%s)", chat_ids) if restricted else SQL()
+        domain = [('id', 'not in', SQL(
+            "(SELECT s.channel_id FROM woow_project_ai_consult_sent s JOIN discuss_channel c ON c.id = s.channel_id "
+            "WHERE (%s)%s)", SQL(" OR ").join(branches), ledger_chats))]
+        Task = self.env['project.task']
+        if restricted:
+            chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel WHERE id = ANY(%s) "
+                                 "AND woow_project_ai_task_id IS NOT NULL)", chat_ids)
+        else:
+            chats_of_tasks = SQL("(SELECT woow_project_ai_task_id FROM discuss_channel "
+                                 "WHERE woow_project_ai_task_id IS NOT NULL)")
+        specs = Task._woow_project_ai_consult_specs()
+        for tab in (TAB_INTERNAL, TAB_CUSTOMER):
+            parts = []
+            for spec in specs:
+                field = Task._fields[spec.field]
+                model = field.comodel_name
+                if model not in state.enabled_models or tab not in model_tabs(self.env, model):
+                    continue
+                if field.type == 'many2one':
+                    column = SQL.identifier(field.name)
+                    # the candidates: every linked record (its index), not only those of tasks with chats: a join
+                    # with discuss_channel here made the plan depend on its statistics (stale ones, all task ids
+                    # NULL right after the install's ANALYZE, gave a nested loop re-running it per record). For
+                    # given chats: the records linked to their tasks (found by the chats' primary keys)
+                    if restricted:
+                        candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL AND id IN %s)", column,
+                                         column, chats_of_tasks)
+                    else:
+                        candidates = SQL("(SELECT %s FROM project_task WHERE %s IS NOT NULL)", column, column)
+                    readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
+                    if readable is None:
+                        parts.append(SQL("SELECT id FROM project_task WHERE %s IS NOT NULL AND id IN %s", column,
+                                         chats_of_tasks))
+                    else:
+                        parts.append(SQL("SELECT id FROM project_task WHERE %s IS NOT NULL "
+                                         "AND NOT COALESCE(%s IN %s, FALSE) AND id IN %s", column, column, readable,
+                                         chats_of_tasks))
+                else:
+                    relation, task_column, record_column = (SQL.identifier(field.relation),
+                                                            SQL.identifier(field.column1),
+                                                            SQL.identifier(field.column2))
+                    if restricted:  # (as above)
+                        candidates = SQL("(SELECT %s FROM %s WHERE %s IN %s)", record_column, relation, task_column,
+                                         chats_of_tasks)
+                    else:
+                        candidates = SQL("(SELECT %s FROM %s)", record_column, relation)
+                    readable = readable_query(self.env, model, user, tab, companies, candidates=candidates)
+                    if readable is None:
+                        parts.append(SQL("SELECT %s FROM %s WHERE %s IN %s", task_column, relation, task_column,
+                                         chats_of_tasks))
+                    else:
+                        parts.append(SQL("SELECT %s FROM %s WHERE NOT COALESCE(%s IN %s, FALSE) AND %s IN %s",
+                                         task_column, relation, record_column, readable, task_column,
+                                         chats_of_tasks))
+            if parts:
+                # (no task id in these sub-queries is ever NULL: this NOT IN stays exact)
+                domain += ['|', ('woow_project_ai_tab', '!=', tab),
+                           ('woow_project_ai_task_id', 'not in', SQL("(%s)", SQL(" UNION ALL ").join(parts)))]
+        return domain
+
+    @api.model
+    def _woow_project_ai_consult_rule_fields(self):
+        """(model, field) the consultant's raw SQL reads: flushed before the
+        rule is used (raw SQL carries no to_flush)."""
+        Task = self.env['project.task']
+        fields_ = [('discuss.channel', 'woow_project_ai_task_id'), ('discuss.channel', 'woow_project_ai_tab')]
+        fields_ += [('project.task', spec.field) for spec in Task._woow_project_ai_consult_specs()]
+        return fields_
 
     @api.model
     def _woow_project_ai_known_task_chats(self, ids):
@@ -596,17 +701,29 @@ class DiscussChannel(models.Model):
             return ['no_assistant']
         return task.project_id._woow_project_ai_tab_problems(channel.woow_project_ai_tab, assistant)
 
-    def _woow_project_ai_partner_allowed(self, partner):
+    def _woow_project_ai_partner_allowed(self, partner, gate=None):
         """True when `partner` has a user who may be in this chat now (the
         task's ``_woow_project_ai_user_allowed``: active, the tab's audience,
-        Odoo's read access to the task)."""
+        Odoo's read access to the task, the consulted records; `gate`: the
+        chat's gate set when the caller computed it already)."""
         self.ensure_one()
         channel = self.sudo()
         if not partner:
             return False
         users = partner.sudo().with_context(active_test=False).user_ids
         task = channel.woow_project_ai_task_id
-        return any(task._woow_project_ai_user_allowed(user, channel.woow_project_ai_tab) for user in users)
+        return any(task._woow_project_ai_user_allowed(user, channel.woow_project_ai_tab, **gate_kwargs(gate))
+                   for user in users)
+
+    def _woow_project_ai_gate(self):
+        """The gate set of this task chat (the consulted records), computed once
+        for a call that checks several people (never kept across calls); None
+        while the AI consultant is unused (nothing gates)."""
+        self.ensure_one()
+        if not consult_state(self.env).used:
+            return None
+        channel = self.sudo()
+        return channel.woow_project_ai_task_id._woow_project_ai_consult_gate(channel.woow_project_ai_tab)
 
     def _woow_project_ai_author_kind(self, message):
         """bot / staff (an employee) / customer (a portal user) / other."""
@@ -786,8 +903,9 @@ class DiscussChannel(models.Model):
         self.ensure_one()
         bots = self._woow_project_ai_bot_partner_ids()
         partners = self.env['res.partner'].sudo().browse(partner_ids).exists()
+        gate = self._woow_project_ai_gate() if any(partner.id not in bots for partner in partners) else None
         return [partner.id for partner in partners
-                if partner.id in bots or self._woow_project_ai_partner_allowed(partner)]
+                if partner.id in bots or self._woow_project_ai_partner_allowed(partner, **gate_kwargs(gate))]
 
     def _message_update_content(self, message, body, attachment_ids=None, partner_ids=None, strict=True,
                                 **kwargs):
@@ -975,11 +1093,16 @@ class DiscussChannel(models.Model):
         bots = self._woow_project_ai_bot_partner_ids()
         Partner = self.env['res.partner'].sudo()
         lost = {}  # partner id: notification ids
+        gates = {}  # chat id: its gate set, once per chat in this call
         for chat_id, partner_id, notification_ids in rows:
             if partner_id in bots:
                 continue
-            if partners is None and chats.browse(chat_id)._woow_project_ai_partner_allowed(Partner.browse(partner_id)):
-                continue
+            if partners is None:
+                chat = chats.browse(chat_id)
+                if chat_id not in gates:
+                    gates[chat_id] = chat._woow_project_ai_gate()
+                if chat._woow_project_ai_partner_allowed(Partner.browse(partner_id), **gate_kwargs(gates[chat_id])):
+                    continue
             lost.setdefault(partner_id, []).extend(notification_ids)
         for partner_id, notification_ids in lost.items():
             notifications = self.env['mail.notification'].sudo().browse(notification_ids)
@@ -1045,6 +1168,7 @@ class DiscussChannel(models.Model):
         for channel in self.sudo().with_context(active_test=False).filtered('woow_project_ai_task_id'):
             keep_bot = channel._woow_project_ai_tab_assistant().partner_id
             to_remove = old_bots = Member
+            gate, gate_known = None, False
             for member in channel.channel_member_ids:
                 partner = member.partner_id
                 if not partner:
@@ -1052,8 +1176,11 @@ class DiscussChannel(models.Model):
                 elif partner.id in bot_ids:
                     if partner != keep_bot:
                         old_bots |= member  # the tab's assistant changed
-                elif not channel._woow_project_ai_partner_allowed(partner):
-                    to_remove |= member
+                else:
+                    if not gate_known:
+                        gate, gate_known = channel._woow_project_ai_gate(), True  # once per chat, for all its members
+                    if not channel._woow_project_ai_partner_allowed(partner, **gate_kwargs(gate)):
+                        to_remove |= member
             if old_bots:
                 self._woow_project_ai_remove_members(old_bots, reason="not the tab's AI assistant any more")
             if to_remove:
@@ -1072,6 +1199,40 @@ class DiscussChannel(models.Model):
     def _woow_project_ai_sync_tasks(self, tasks):
         self._woow_project_ai_forget_readable()
         self._woow_project_ai_chats_of(tasks)._woow_project_ai_sync()
+
+    @api.model
+    def _woow_project_ai_consulted_chats(self, records):
+        """(sudo) The task chats that consulted `records` (records of one
+        model): those whose ledger references them, and the chats of the tasks
+        whose link fields reference them."""
+        ids = [value for value in (as_id(i) for i in records._ids) if value]
+        Channel = self.sudo().with_context(active_test=False)
+        if not ids:
+            return Channel.browse()
+        rows = self.env.execute_query(SQL("SELECT DISTINCT channel_id FROM woow_project_ai_consult_sent "
+                                          "WHERE res_model = %s AND res_id = ANY(%s)", records._name, ids))
+        chat_ids = {row[0] for row in rows}
+        Task = self.env['project.task'].sudo().with_context(active_test=False)
+        specs = [spec for spec in Task._woow_project_ai_consult_specs()
+                 if Task._fields[spec.field].comodel_name == records._name]
+        if specs:
+            tasks = Task._search(expression.OR([[(spec.field, 'in', ids)] for spec in specs]))
+            chat_ids |= set(Channel.search([('woow_project_ai_task_id', 'in', tasks)]).ids)
+        return Channel.browse(sorted(chat_ids))
+
+    @api.model
+    def _woow_project_ai_sync_consulted(self, records):
+        """Public for consultant bridges: who may read `records` may have
+        changed (their access fields were written, they were merged or are
+        being deleted): the chats that consulted them are synced (people who
+        may not use them any more are removed). Nothing while consultation is
+        unused."""
+        if not records or not consult_state(self.env).used:
+            return
+        chats = self._woow_project_ai_consulted_chats(records)
+        self._woow_project_ai_forget_readable()
+        if chats:
+            chats._woow_project_ai_sync()
 
     @api.model
     def _woow_project_ai_sync_projects(self, projects):
@@ -1332,8 +1493,69 @@ class DiscussChannel(models.Model):
         return assistant._identity(self._woow_project_ai_requester(assistant, message))
 
     def _woow_project_ai_link_hosts(self, assistant):
-        """Hosts whose links in AI replies stay clickable: None (any http(s) link)."""
-        return None
+        """Hosts whose links in AI replies stay clickable: None (any http(s)
+        link), except in a consulted chat (one that sent records to the AI, or
+        whose task links records of an enabled kind): there only the site's
+        own hosts and the hosts the consulted records allow
+        (``_woow_project_ai_consult_link_hosts``). Files written by the model
+        are then downloaded only from hosts in both this list and the AI
+        connection's download domains (ai_assistant_reply.py)."""
+        self.ensure_one()
+        consulted = self._woow_project_ai_consulted_records()
+        if not consulted:
+            return None
+        hosts = set(self._woow_project_ai_site_hosts())
+        for model, ids in consulted.items():
+            if not is_consult_model(self.env, model):
+                continue
+            records = self.env[model].sudo().with_context(active_test=False).browse(ids).exists()
+            if records:
+                hosts |= {host for host in records._woow_project_ai_consult_link_hosts() or () if host}
+        return sorted(hosts)
+
+    def _woow_project_ai_consulted_records(self):
+        """{model: [ids]} of a consulted chat (sudo): the current links of its
+        task to records of enabled kinds (primary first; any tab), then its
+        ledger rows. Empty: not a consulted chat (links of kinds that are not
+        enabled change nothing)."""
+        self.ensure_one()
+        state = consult_state(self.env)
+        channel = self.sudo()
+        if not state.used or not channel.woow_project_ai_task_id:
+            return {}
+        found = {}
+        task = channel.woow_project_ai_task_id
+        for spec in task._woow_project_ai_consult_specs():
+            if task._fields[spec.field].comodel_name in state.enabled_models:
+                for record in task[spec.field]:
+                    if record.id not in found.setdefault(record._name, []):
+                        found[record._name].append(record.id)
+        rows = self.env.execute_query(SQL("SELECT res_model, res_id FROM woow_project_ai_consult_sent "
+                                          "WHERE channel_id = %s ORDER BY id", channel.id))
+        for model, res_id in rows:
+            if res_id not in found.setdefault(model, []):
+                found[model].append(res_id)
+        return found
+
+    @api.model
+    def _woow_project_ai_site_hosts(self):
+        """The hosts of this site: web.base.url and the website domains (Odoo
+        stores those with a scheme), by the module's one URL rule
+        (tools/urls.split_url: a URL whose host is not certain gives none)."""
+        def host_of(url):
+            parts = split_url(url)
+            return (parts.hostname or '').lower().rstrip('.') if parts else ''
+
+        hosts = set()
+        base_host = host_of(self.env['ir.config_parameter'].sudo().get_param('web.base.url') or '')
+        if base_host:
+            hosts.add(base_host)
+        if 'website' in self.env:
+            for domain in self.env['website'].sudo().search([]).mapped('domain'):
+                host = host_of(domain if '://' in (domain or '') else 'https://%s' % (domain or ''))
+                if host:
+                    hosts.add(host)
+        return hosts
 
     def _woow_project_ai_channel_info(self, assistant):
         """``channel`` object of the n8n payload."""
@@ -1474,11 +1696,23 @@ class DiscussChannel(models.Model):
         return history
 
     def _woow_project_ai_system_prompt(self, assistant, history):
-        """System prompt sent to the backend: the assistant's prompt, the
-        project text of this tab (the customer chat never gets the internal
-        one), a task summary read with the asker's own rights, and the notes
-        about the speaker labels (customer chat: the kind and the name;
-        internal chat: the name, when a turn has one)."""
+        """System prompt sent to the backend: the instructions first, then one
+        data section last (docs/PROTOCOL.md "system prompt").
+
+        Instructions: the assistant's prompt; the project text of this tab
+        (the customer chat never gets the internal one); in the internal chat
+        the role prompts of the consulted kinds of record (system
+        administrators' settings); the notes about the speaker labels (customer
+        chat: the kind and the name; internal chat: the name, when a turn has
+        one). Data, between two markers tagged with 8 random hex
+        characters per request, every value cleaned (tools/record_text): the
+        task summary and the consulted records, both read with the asker's own
+        rights; the consulted records' title carries the same tag, and once
+        the consultant was used on the database the header says only that
+        section holds them. Every consulted record that has a line here is recorded in
+        the chat's ledger before the backend is called (the job commits it in
+        ``before_call``): from then on the chat stays with people who can read
+        it."""
         self.ensure_one()
         channel = self.sudo()
         task = channel.woow_project_ai_task_id
@@ -1495,20 +1729,50 @@ class DiscussChannel(models.Model):
                 # the answers will be built from this project's text: the chat stays with its readers
                 channel.woow_project_ai_brief_project_ids = [Command.link(task.project_id.id)]
                 self._woow_project_ai_forget_readable()
+        blocks, sent, consulted = [], [], []
+        tag = delimiter_tag()
         if requester:
+            members = channel._woow_project_ai_member_users()
             audience = None
             if tab == TAB_INTERNAL:
                 # every member reads the answer: related records only if all of them can read them
-                audience = channel._woow_project_ai_member_users().filtered(
-                    lambda member: member._is_internal()) - requester
-            parts.append(task._woow_project_ai_context_block(requester, tab, audience))
+                audience = members.filtered(lambda member: member._is_internal()) - requester
+            blocks.append(task._woow_project_ai_context_block(requester, tab, audience))
+            # the consulted records: in the customer chat every other person of the chat reads the answer too
+            consult_audience = audience if tab == TAB_INTERNAL else members - requester
+            consult_block, sent, consulted = task._woow_project_ai_consult_block(requester, tab, consult_audience,
+                                                                                 tag)
+            blocks.append(consult_block)
+        if tab == TAB_INTERNAL and consulted:
+            roles = channel._woow_project_ai_consult_role_prompts(consulted)
+            if roles:
+                parts.append('%s\n%s' % (CONSULT_ROLE_HEADER, '\n\n'.join(roles)))
         if tab == TAB_CUSTOMER:
             parts.append(LABEL_SYSTEM_NOTE)
             if any(entry.get('woow_project_ai_staff') for entry in history or []):
                 parts.append(STAFF_SYSTEM_NOTE)
         elif any(entry.get('woow_project_ai_labelled') for entry in history or []):
             parts.append(INTERNAL_LABEL_NOTE)
+        blocks = [block for block in blocks if block]
+        if blocks:
+            parts.append(data_section(blocks, tag, consult=consult_state(self.env).used))
+        if sent:
+            self.env[LEDGER].sudo()._woow_project_ai_record(channel, sent)
+            _logger.info("Project AI task chat %s: %s consulted record(s) of %s sent to the AI", channel.id,
+                         len(sent), ', '.join(consulted))
         return '\n\n'.join(part for part in parts if part)
+
+    def _woow_project_ai_consult_role_prompts(self, model_names):
+        """The role prompts (trusted: system administrators write them) of the
+        enabled profiles of these kinds of record, in their order: at most 3,
+        each at most 1,000 characters."""
+        state = consult_state(self.env)
+        names = [name for name in model_names if name in state.enabled_models][:CONSULT_MAX_ROLES]
+        if not names:
+            return []
+        profiles = self.env[PROFILE].sudo().search([('model', 'in', names), ('enabled', '=', True)])
+        by_model = {profile.model: (profile.role_prompt or '').strip() for profile in profiles}
+        return [by_model[name][:CONSULT_MAX_ROLE_CHARS] for name in names if by_model.get(name)]
 
     def _woow_project_ai_member_users(self):
         """The active users of the people (not the AI bots) of this chat."""
