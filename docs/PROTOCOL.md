@@ -157,10 +157,25 @@ AI 顧問對象（每行一筆紀錄；標記 3fa2c1d9）：
   (`- account: …`), then the ids, the language and the time zone, the
   cleaned name last; `metadata` repeats the identity (`odoo_*`) without the
   email too.
-- **current time** (contract v1.3), computed once when the request is built.
-  Its time zone is the current company's (the company's contact), else the
+- **current time** (contract v1.3), computed when the request is built (each
+  fallback request of a turn has its own). Its time zone is the first one set
+  of: the time zone of the working schedule of the company that runs the
+  replies (the database's main company; Settings > Technical > Resource >
+  Working Schedules in developer mode, or Employees > Configuration >
+  Working Schedules), else the `tz` of the company's contact, else the
   asker's own (the identity's `tz`), else `UTC`; a value that is not a known
-  IANA time zone counts as none. n8n gets `now`:
+  IANA time zone counts as none. The schedule's time zone is a required field,
+  so with a schedule it wins over the asker's (a new database's default
+  schedule says UTC). Check it with a read-only query:
+
+```sql
+SELECT c.id, c.name, rc.tz AS schedule_tz, p.tz AS partner_tz
+  FROM res_company c
+  LEFT JOIN resource_calendar rc ON rc.id = c.resource_calendar_id
+  JOIN res_partner p ON p.id = c.partner_id;
+```
+
+  n8n gets `now`:
 
 ```json
 {"utc": "2026-11-28T02:20:00Z", "local": "2026-11-28T10:20:00+08:00", "tz": "Asia/Taipei", "weekday": "Saturday"}
@@ -261,22 +276,34 @@ Accept: text/event-stream
   `[附件] <name>（<mimetype>，<size>）：<signed url>`.
 - **When the model cannot read a file** (contract v1.3): a request that
   carries file parts (inline images, documents in `file` mode) and gets HTTP
-  400, 413, 415, 422 or 500 (after the retries above) is sent again at once,
-  with no wait, outside *Retries*, within the same *Timeout*: first without
-  the file parts of earlier messages; then, when the answer is again one of
-  these statuses and the question's own files are left, without any file
-  part. A file left out is its link line followed by
-  `[附件說明] <name>：模型無法讀取這個檔案，只附下載連結。`; the system message and
-  everything else stay the same. Each request writes its own call log row
-  (`http_error` with its status for a refused one); the answer is the first
-  success. When one comes that way, the reply job keeps the ids of the files
-  that request left out (*Files Sent as Links Only*), and every later
-  request of the same chat sends those files as their link line and the same
-  note from the start (a retry of the job too). When no request succeeds the
-  turn fails as before (the error message) and nothing new is kept. A
-  request without file parts, and any other status, are handled as before.
-  Each job that asks carries the chat's whole set, so it lasts as long as the
-  chat has a job younger than the cleanup (30 days for finished jobs).
+  400, 413, 415, 422 or 500 (after the retries above) is followed at once by
+  a fallback request, with no wait, outside *Retries*, within the same
+  *Timeout* (never with less than one second left): first without the file
+  parts of earlier messages; then, when the answer is again one of these
+  statuses and the question's own files are left, without any file part.
+  Before each fallback request the checks of a reply run again (the
+  assistant active and still the chat's, its connection ready, the customer
+  chat safe for customers, the asker's access, the pause): when one fails,
+  nothing more is sent and the job ends as a blocked one. Each fallback
+  request is built again (its own current time and data-section tag) with
+  the same choice of files minus the ones it leaves out; a file left out is
+  its link line followed by
+  `[附件說明] <name>：模型無法讀取這個檔案，只附下載連結。` Each request writes its
+  own call log row and only one (`http_error` with its status for a refused
+  one); the answer is the first success. When one comes that way, the reply
+  job keeps the ids of the files that request left out (*Files Sent as Links
+  Only*), and every later request of the same chat sends each of them, where
+  it would be a file part (in the window of recent messages, of a type and
+  size that is sent, documents in `file` mode), as its link line and the
+  same note from the start (a retry of the job too); elsewhere it is as
+  usual. When no request succeeds the turn fails as before (the error
+  message) and nothing new is kept. A request without file parts, and any
+  other status, are handled as before. The memory lasts as long as the
+  chat, whatever its connection or model: each job that asks carries the
+  chat's whole set, and the daily cleanup keeps the newest job of a chat
+  that carries it. A system administrator clears it from a job of that chat
+  (*Forget Files Sent as Links* on the *Reply Job* form; the filter *Files
+  Sent as Links Only* lists them).
 - Streamed answers: `: keepalive` comments and events other than `message`
   are ignored, `delta.content` is joined, `[DONE]` ends it (a stream without
   `[DONE]` and without `finish_reason` is invalid). `usage` is stored in the
@@ -284,15 +311,21 @@ Accept: text/event-stream
 - `<think>` / `<thinking>` blocks and special tokens are removed.
 - **Labels in answers** (contract v1.3): a speaker label the model copied to
   the start of its answer is removed before it is posted, with the white
-  space after it, as long as one is there: `[<kind>]` or `[<kind> <text>]`
-  (no `]` or line break in the text) where the kind is 真人客服, 客戶 or
-  負責同事, followed by `]`, a space or a full-width space (`[客戶服務中心]` is
-  no label); in the internal chat also `[<name>]` when it is the label of a
-  person of that chat (a member, or the author of a person's turn of the
-  history). A streamed answer is cleaned as a whole, once it ended. Nothing
-  else changes: brackets after the start, or a leading bracket that is no
-  such label (`[注意] 截止日改了`), stay. An answer that held only labels is
-  empty (`invalid_response`: the error message).
+  space around it (what Python's `str.isspace()` counts, so also full-width
+  and no-break spaces, and the zero-width U+200B and U+FEFF), as long as
+  one is there: `[<kind>]` or `[<kind> <text>]` (no `]` or line break in the
+  text), the kind followed by `]`, a space or a full-width space
+  (`[客戶服務中心]` is no label). The kinds: 真人客服, 客戶 and 負責同事 in every
+  chat, and 其他 in the customer chat (its own label for a person who is
+  neither a colleague nor a portal user). In the internal chat also
+  `[<name>]` when it is the label of a person of that chat (a member, or the
+  author of a person's turn of the history), unless a later line of the
+  answer also starts with such a label (a list of who does what stays as it
+  is). A label directly followed by `(` is the text of a Markdown link
+  (`[客戶](https://…)`) and stays. A streamed answer is cleaned as a whole,
+  once it ended. Nothing else changes: brackets after the start, or a
+  leading bracket that is no such label (`[注意] 截止日改了`), stay. An answer
+  that held only labels is empty (`invalid_response`: the error message).
 - LiteLLM has no handoff signal.
 
 ## n8n backend
@@ -402,8 +435,10 @@ Content-Type: application/json
 
 Posts into a task AI chat as the assistant, for n8n "skip, then push" (take
 `channel.id` from the webhook body). A speaker label at the start of the
-text is removed as from an answer (contract v1.3, "Labels in answers"
-above): a push left with no text and no file is `empty_message`. Only the
+text is removed as from an answer, with the same labels (contract v1.3,
+"Labels in answers" above: in the internal chat those of its members and
+of the authors of the history the AI reads, 其他 in the customer chat): a
+push left with no text and no file is `empty_message`. Only the
 assistant answering that chat now may push (same rules as a reply:
 assistant active, connection ready,
 customer chat safe for customers, task active), never while the AI is

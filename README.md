@@ -52,45 +52,69 @@ checks against this module (`--test-tags woow_ai_contract`). Project AI's
 values (contract 3.1): LiteLLM answers are streamed, the system message
 has an identity block, and the person's text carries the system's speaker
 label: `[<name>] ` in the internal chat, where every speaker is an
-employee, and `[客戶 <name>] ` / `[負責同事 <name>] ` in the customer chat (a
+employee, and `[客戶 <name>] ` / `[負責同事 <name>] ` / `[其他 <name>] ` (a
+person who is neither a colleague nor a portal user) in the customer chat (a
 name with an `@` counts as no name: `[客戶] `, or no label in the internal
 chat).
 
-What contract v1.3 added, after the staging test bench of 2026-11-28 (a
-file the model could not read broke every later turn of a chat, a model
-told a customer the shop was open on a Saturday, a Live Chat answer started
-with the operator's label):
+What contract v1.3 added, after a test bench found three defects on
+2026-11-28 (a file the model could not read broke every later turn of a
+chat, a model told a customer the shop was open on a Saturday, a Live Chat
+answer started with the operator's label):
 
-- **The current time.** Every request carries it, computed once when the
+- **The current time.** Every request carries it, computed when the
   request is built: n8n gets `now` (`{utc, local, tz, weekday}`), LiteLLM
   one system line after the identity block,
   `Current time: 2026-11-28 10:20 (Saturday), time zone Asia/Taipei (UTC+08:00).`
-  The time zone is the company's (Settings > Companies, the company's
-  contact), else the asker's own, else UTC; a value that is not a known
-  time zone counts as none.
+  The time zone is the first one set of: the company's working schedule's
+  (the schedule of the company that runs the replies, the database's main
+  company: Settings > Technical > Resource > Working Schedules in developer
+  mode, or Employees > Configuration > Working Schedules where Employees is
+  installed), the time zone of the company's contact (no standard form
+  shows it), the asker's own, UTC. A value that is not a known time zone
+  counts as none. A working schedule's time zone is a required field, so
+  where the company has a schedule (Odoo gives every company one) it wins
+  over the asker's; a new database's default schedule says UTC: set it to
+  the time zone of the business (see *Upgrading*).
 - **Labels in answers.** A model sees the speaker labels of the history and
   may start its answer with one. Before an answer is posted, every label
-  at its start goes: `[客戶 …]`, `[負責同事 …]`, `[真人客服 …]` (or the kind
-  alone), and in the internal chat also `[<name>]` when it is the label of
-  a person of that chat; the same for a text an n8n workflow pushes later.
-  So an AI answer never shows up in the customer
-  chat as 「[負責同事 王小明] 好的，我們同意退款」. Text in brackets elsewhere,
-  or a leading bracket that is no such label (「[注意] 截止日改了」), stays.
-  An answer that held only labels is an empty answer: the person gets the
-  error message.
+  at its start goes, with the white space around it (any white space,
+  no-break and zero-width spaces included): `[客戶 …]`, `[負責同事 …]`,
+  `[真人客服 …]` (or the kind alone) in every chat, `[其他 …]` in the
+  customer chat, and in the internal chat `[<name>]` when it is the label
+  of a person of that chat (a member, or the author of a person's message
+  in the history); the same for a text an n8n workflow pushes. So an AI
+  answer never shows up in the customer chat as
+  「[負責同事 王小明] 好的，我們同意退款」. What stays: text in brackets
+  elsewhere, a leading bracket that is no such label (「[注意] 截止日改了」),
+  a label directly followed by `(` (a Markdown link: `[王小明](https://…)`),
+  and, in the internal chat, an answer where a later line also starts with
+  a person's label (a list of who does what). An answer that held only
+  labels is an empty answer: the person gets the error message; a pushed
+  text of labels only is refused like an empty one.
 - **When the model cannot read a file.** LiteLLM only: when a request that
   carries files (inline images, documents sent as files) gets HTTP 400, 413,
   415, 422 or 500, the same turn is sent again at once (no wait, not
-  counted as a retry, within the same timeout): first without the files of
-  earlier messages, then, when the question's own files are left, without
-  any. A file left out is its `[附件]` download line followed by
-  `[附件說明] <name>：模型無法讀取這個檔案，只附下載連結。` Each request has its own
-  call log row. When an answer comes that way, the chat remembers those
-  files (on its reply jobs, *Files Sent as Links Only*: each job that asks
-  carries the chat's whole set): every later request of that chat sends them
-  as download links only, so no later turn fails first. When no request
-  succeeds, the person gets the error message as before and nothing new is
-  remembered. n8n is unchanged (it gets links).
+  counted as a retry, within the same timeout, never with less than one
+  second left): first without the files of earlier messages, then, when the
+  question's own files are left, without any. Before each such request the
+  checks of a reply run again (the assistant, the connection's readiness,
+  the asker's access, the pause): when one fails, nothing more is sent. Each
+  request is built again (its own current time) with the same files minus
+  the ones it leaves out; a file left out is its `[附件]` download line
+  followed by `[附件說明] <name>：模型無法讀取這個檔案，只附下載連結。` Each request
+  has its own call log row. When an answer comes that way, the chat
+  remembers those files (*Files Sent as Links Only* on its reply jobs):
+  every later request of that chat sends them, where they would be files of
+  the request, as their download line and the note, so no later turn fails
+  first. When no request succeeds, the person gets the error message as
+  before and nothing new is remembered. The memory lasts as long as the
+  chat: changing the connection or the model does not clear it, and the
+  daily cleanup of jobs keeps the newest job that carries it. A system
+  administrator clears it: *Reply Jobs*, filter *Files Sent as Links Only*,
+  open a job of that chat, *Forget Files Sent as Links* (for example after
+  switching to a model that reads those files). n8n is unchanged (it gets
+  links).
 
 ## Features
 
@@ -166,8 +190,9 @@ with the operator's label):
   Instructions come first, then one data section between two markers tagged
   with 8 random characters per request; every value of it is cleaned, so no
   value can close it. Then the identity block and the current time (the
-  company's time zone, else the asker's, else UTC). The customer chat takes
-  no log note (its customers read everything in it).
+  time zone of the company's working schedule, else of the company's
+  contact, else the asker's, else UTC). The customer chat takes no log note
+  (its customers read everything in it).
 - **Durable reply queue** in the cron process, typing indicator, files both
   ways (images inline, documents as file parts or signed links; the files of
   one answer: 45 seconds and 100 MB together, a failed download stays a
@@ -249,17 +274,30 @@ the rollback).
 
 18.0.1.2.0 (contract v1.3, above) needs no migration either: from
 18.0.1.1.0, `-u woow_ai_task` adds one column to the reply jobs (*Files Sent
-as Links Only*, empty on the existing jobs) and shows it on the job form;
+as Links Only*, empty on the existing jobs) and shows it on the job form
+with its *Forget Files Sent as Links* button (system administrators);
 nothing stops answering. What changes for the people:
 
-- every request carries the current time; check the company's time zone
-  (Settings > Companies > the company's contact, *Timezone*): without one,
-  the asker's own time zone is used, else UTC;
+- every request carries the current time in the time zone of the company's
+  working schedule (above). Check it first, with this read-only query (a
+  new database's default schedule says UTC; set the schedule's *Timezone*
+  to the business's own):
+
+  ```sql
+  SELECT c.id, c.name, rc.tz AS schedule_tz, p.tz AS partner_tz
+    FROM res_company c
+    LEFT JOIN resource_calendar rc ON rc.id = c.resource_calendar_id
+    JOIN res_partner p ON p.id = c.partner_id;
+  ```
+
+  `schedule_tz` wins; `partner_tz` counts only for a company without a
+  schedule, and the asker's own time zone only when neither is set;
 - an answer that starts with a speaker label loses it (an answer of labels
   only now gets the error message instead of being posted);
 - a LiteLLM turn whose file the model refuses is answered without the file
   (more call log rows with `http_error` 400, 413, 415, 422 or 500, each
-  followed by the request without the file).
+  followed by the request without the file), and the chat keeps sending
+  that file as a link until a system administrator clears it (above).
 
 No other module of this repository changes: the bridges and the CRM
 template keep their versions. Rollback: the 18.0.1.1.0 image with the
