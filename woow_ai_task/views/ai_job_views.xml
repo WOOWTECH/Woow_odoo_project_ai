@@ -14,6 +14,7 @@
                 <field name="run_count"/>
                 <field name="finished_at"/>
                 <field name="error"/>
+                <field name="unreadable_files" optional="hide"/>
             </list>
         </field>
     </record>
@@ -23,6 +24,10 @@
         <field name="model">woow.project.ai.job</field>
         <field name="arch" type="xml">
             <form string="Reply Job" create="0" edit="0">
+                <header>
+                    <button name="action_forget_unreadable_files" type="object" string="Forget Files Sent as Links"
+                            invisible="not unreadable_files" groups="base.group_system"/>
+                </header>
                 <sheet>
                     <group>
                         <group>
@@ -41,6 +46,7 @@
                     </group>
                     <group>
                         <field name="error"/>
+                        <field name="unreadable_files" invisible="not unreadable_files"/>
                     </group>
                 </sheet>
             </form>
@@ -56,6 +62,7 @@
                 <field name="channel_id"/>
                 <filter name="unfinished" string="Unfinished" domain="[('state', 'in', ('pending', 'running'))]"/>
                 <filter name="failed" string="Failed" domain="[('state', '=', 'failed')]"/>
+                <filter name="unreadable" string="Files Sent as Links Only" domain="[('unreadable_files', '!=', False)]"/>
                 <group expand="0" string="Group By">
                     <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
                     <filter name="group_assistant" string="AI Assistant" context="{'group_by': 'assistant_id'}"/>

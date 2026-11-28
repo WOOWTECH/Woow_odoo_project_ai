@@ -17,6 +17,7 @@ from werkzeug.exceptions import NotFound
 from odoo import http, SUPERUSER_ID
 from odoo.http import request
 
+from ..models.ai_assistant_backend import clean_answer
 from ..tools import media
 
 _logger = logging.getLogger(__name__)
@@ -96,7 +97,9 @@ class WoowProjectAiController(http.Controller):
         attachments = data.get('attachments') or []
         if not isinstance(to, dict) or not isinstance(text, str) or not isinstance(attachments, list):
             return fail(400, 'invalid_body')
-        if not text.strip() and not attachments:
+        # a text the AI posts (contract 3.14 "Labels in answers"): the labels every chat removes go first, so a
+        # text of such labels only is refused here, exactly like an empty one
+        if not clean_answer(text).strip() and not attachments:
             return fail(400, 'empty_message')
         channel_id = to.get('channel_id')
         if not isinstance(channel_id, int) or isinstance(channel_id, bool) or channel_id <= 0:
@@ -111,6 +114,12 @@ class WoowProjectAiController(http.Controller):
             return fail(403, 'not_allowed', channel=channel)
         if channel._woow_project_ai_is_paused():
             return fail(409, 'paused', channel=channel)
+        # then this chat's own labels, as from an answer: those of its members and history authors in the internal
+        # chat, 其他 in the customer chat; a text of labels only is refused like an empty one
+        names, kinds = channel._woow_project_ai_answer_labels(assistant=assistant)
+        text = clean_answer(text, names, kinds)
+        if not text.strip() and not attachments:
+            return fail(400, 'empty_message', channel=channel)
         prepared = assistant._prepare_reply({'text': text, 'attachments': attachments}, channel=channel)
         if not str(prepared['html']).strip() and not prepared['files']:
             return fail(400, 'empty_message', 'no text and no usable attachment', channel=channel)

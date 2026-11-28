@@ -528,6 +528,14 @@ class WoowProjectAiJob(models.Model):
     error = fields.Char(string='Error', readonly=True)
     context_message_id = fields.Integer(string='Last Message In Context', readonly=True,
                                         help='Highest message id sent to the backend as conversation')
+    # the conversation's memory of the files the model could not read (contract 3.7 "Fallback when the model
+    # cannot read a file"): written by the runner only, read for every request of the conversation
+    # (_unreadable_files_of); created empty, explicitly (never from a default)
+    unreadable_files = fields.Char(
+        string='Files Sent as Links Only', readonly=True, copy=False,
+        help='Ids of the attachments of this conversation the model could not read: a request with them was '
+             'refused, and the same turn sent without them was answered. Every later request of the '
+             'conversation sends them as download links only, with a note for the model.')
 
     @api.depends('channel_id')
     def _compute_display_name(self):
@@ -538,9 +546,10 @@ class WoowProjectAiJob(models.Model):
 
     @api.model
     def _create_for_message(self, channel, assistant, message):
-        # explicit values only: never the client's default_* keys (default_state, default_started_at,
-        # default_run_count...: a post applies the client's context to the request), nor the poster's own
-        # ir.default rows (any employee may set personal defaults on any model): the row starts pending, never run
+        # explicit values only, every field the runner reads: never the client's default_* keys (default_state,
+        # default_started_at, default_run_count...: a post applies the client's context to the request), nor an
+        # ir.default row (global, or the poster's own: any employee may set personal defaults on any model): the
+        # row starts pending, never run, remembering no file
         job = self.sudo().with_context(clean_context(self.env.context)).create({
             'channel_id': channel.id,
             'assistant_id': assistant.id,
@@ -554,9 +563,63 @@ class WoowProjectAiJob(models.Model):
             'error': False,
             'context_message_id': 0,
             'reply_message_id': False,
+            'unreadable_files': False,
         })
         job._schedule_dispatch()
         return job
+
+    # --- Files the model could not read (contract 3.7 "Fallback") ---
+
+    @staticmethod
+    def _file_ids(value):
+        """Attachment ids of an ``unreadable_files`` value (ASCII digits only:
+        '²' or '①' would pass isdigit() and break int())."""
+        parts = (part.strip() for part in (value or '').split(','))
+        return {int(part) for part in parts if part.isascii() and part.isdecimal()}
+
+    @api.model
+    def _unreadable_files_of(self, channel):
+        """The files of `channel` that the model could not read (the
+        ``unreadable_files`` of its jobs): every request of the conversation
+        sends them as no file part (where one would be a file part, its link
+        line and the fallback note). Each job that asks carries the whole set
+        (_call_backend), and the cleanup keeps the newest such job of each
+        conversation (_cleanup_old_jobs): the memory lasts as long as the
+        conversation, whatever its connection or model, until a system
+        administrator forgets it (action_forget_unreadable_files)."""
+        if not channel:
+            return frozenset()
+        jobs = self.sudo().search([('channel_id', '=', channel.id), ('unreadable_files', '!=', False)])
+        return frozenset(attachment_id for value in jobs.mapped('unreadable_files')
+                         for attachment_id in self._file_ids(value))
+
+    def action_forget_unreadable_files(self):
+        """Forget the files the conversations of these jobs send as links only
+        (contract 3.7: the memory lasts as long as the conversation; changing
+        the connection or the model does not clear it). After a switch to a
+        model that reads such files, a system administrator clears it here:
+        the next request of the conversation sends them as file parts again
+        (and a fallback remembers them again when they are refused)."""
+        jobs = self.search([('channel_id', 'in', self.channel_id.ids), ('unreadable_files', '!=', False)])
+        jobs.write({'unreadable_files': False})
+        _logger.info("Project AI jobs %s: the files sent as links only of conversations %s forgotten (user %s)",
+                     jobs.ids, self.channel_id.ids, self.env.uid)
+        return True
+
+    def _remember_unreadable_files(self, attachment_ids):
+        """Keep on this job the files of the conversation the model could not
+        read (see _unreadable_files_of): what it remembered before and what a
+        fallback left out of the request that got the answer. Each job that
+        asks carries the whole set, so the memory lasts as long as the
+        conversation has a job younger than the cleanup. True when it wrote."""
+        self.ensure_one()
+        job = self.sudo()
+        known = self._file_ids(job.unreadable_files)
+        files = known | {int(attachment_id) for attachment_id in attachment_ids}
+        if files == known:
+            return False
+        job.write({'unreadable_files': ','.join(str(attachment_id) for attachment_id in sorted(files))})
+        return True
 
     def _schedule_dispatch(self, at=None):
         """Make sure these (pending) jobs get processed, after the commit.
@@ -848,7 +911,12 @@ class WoowProjectAiJob(models.Model):
         commit_step()
         typing = _typing_hub.add(self.env.cr.dbname, channel.id, assistant.partner_id.id) if commit else None
         try:
-            result = assistant._call_backend(channel, history, job=self, before_call=commit_step)
+            result = assistant._call_backend(channel, history, job=self, before_call=commit_step,
+                                             gate=self._may_still_ask)
+            if result.get('unreadable_files'):
+                # the files the model could not read, durable before the downloads: a retry of this job (a crash
+                # below) and every later request of the conversation send them as links at once
+                commit_step()
             prepared = []
             # the customer chat hands the customer to a person on an n8n "handoff"
             handoff = not result['error'] and channel._woow_project_ai_review_answer(assistant, result)
@@ -869,6 +937,10 @@ class WoowProjectAiJob(models.Model):
 
         self._lock_channel_row()
         self._set_typing(False)
+        if result.get('gate_blocked') and self._skip_reply(commit_step):
+            # the run-time gate closed before a fallback request (contract 3.5): nothing more was sent, the job ends
+            # as one blocked before its call (the tab's notice included)
+            return
         if self._has_newer_job():
             self._finish('skipped', 'a newer message of the same person arrived; the newest job answers')
             commit_step()
@@ -950,6 +1022,27 @@ class WoowProjectAiJob(models.Model):
             return False
         commit_step()
         return True
+
+    def _may_still_ask(self):
+        """The run-time gate of contract 3.5, read only, as checked again
+        before a fallback request (3.7): the job may still call the backend
+        while its chat is a task chat whose AI can answer (no problem: the
+        connection ready, the customer tab safe), its asker may use the chat,
+        its assistant is active and still the chat's, and the AI is not
+        paused. _skip_reply finishes the job when it may not."""
+        self.ensure_one()
+        channel = self.channel_id.sudo()
+        author = self.message_id.sudo().author_id
+        if not channel.woow_project_ai_task_id:
+            return False
+        if channel._woow_project_ai_tab_assistant() and channel._woow_project_ai_problems():
+            return False
+        if author and author.id not in channel._woow_project_ai_bot_partner_ids() \
+                and not channel._woow_project_ai_partner_allowed(author):
+            return False
+        if not self.assistant_id.sudo().active or not self._assistant_still_answers():
+            return False
+        return not channel._woow_project_ai_is_paused()
 
     def _assistant_still_answers(self):
         """True while the job's AI assistant is still the one answering its channel."""
@@ -1382,8 +1475,18 @@ class WoowProjectAiJob(models.Model):
 
     @api.model
     def _cleanup_old_jobs(self, days=30):
+        """Delete the finished jobs older than `days`, except the newest job of
+        each conversation that carries what it remembers (``unreadable_files``,
+        contract 3.7: the memory lasts as long as the conversation)."""
         cutoff = fields.Datetime.now() - timedelta(days=days)
         old = self.search([('state', 'in', ('done', 'failed', 'skipped')), ('create_date', '<', cutoff)])
+        if old:
+            self.flush_model(['channel_id', 'unreadable_files'])
+            self.env.cr.execute("""
+                SELECT DISTINCT ON (channel_id) id FROM woow_project_ai_job
+                 WHERE channel_id = ANY(%s) AND unreadable_files IS NOT NULL AND unreadable_files != ''
+                 ORDER BY channel_id, id DESC""", (old.channel_id.ids,))
+            old -= self.browse([row[0] for row in self.env.cr.fetchall()])
         count = len(old)
         if count:
             old.unlink()
