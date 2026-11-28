@@ -78,10 +78,11 @@ answer started with the operator's label):
   the time zone of the business (see *Upgrading*).
 - **Labels in answers.** A model sees the speaker labels of the history and
   may start its answer with one. Before an answer is posted, every label
-  at its start goes, with the white space around it (any white space,
-  no-break and zero-width spaces included): `[客戶 …]`, `[負責同事 …]`,
-  `[真人客服 …]` (or the kind alone) in every chat, `[其他 …]` in the
-  customer chat, and in the internal chat `[<name>]` when it is the label
+  at its start goes, with the white space around it (what Python's
+  `str.isspace()` counts, plus the zero-width U+200B and U+FEFF):
+  `[客戶 …]`, `[負責同事 …]`, `[真人客服 …]` (or the kind alone) in every
+  chat, `[其他 …]` in the customer chat, and in the internal chat
+  `[<name>]` when it is the label
   of a person of that chat (a member, or the author of a person's message
   in the history); the same for a text an n8n workflow pushes. So an AI
   answer never shows up in the customer chat as

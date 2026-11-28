@@ -216,7 +216,12 @@ further comment; customer messages written meanwhile are not answered later.
 - *Retries* (0–2, default 1) only when the connection could not be opened or
   the backend answered HTTP 429 / 503, after 3 s and 10 s. Never after the
   request was sent (read timeout, reset, 5xx): the backend may already be
-  working on it. Redirects are never followed (a 3xx is an error).
+  working on it. Redirects are never followed (a 3xx is an error). After the
+  wait, the checks of a reply run again before the request is sent again
+  (the assistant active and still the chat's, its connection ready, the
+  customer chat safe for customers, the asker's access, the pause): when one
+  fails, it is not sent again and the job ends as a blocked one (the tab's
+  notice).
 - A failure posts the assistant's error message and is kept in the call log
   (status, HTTP code, duration, a fixed text or the exception's type name;
   never the upstream body nor an exception's text; the server log carries an
@@ -278,7 +283,9 @@ Accept: text/event-stream
   carries file parts (inline images, documents in `file` mode) and gets HTTP
   400, 413, 415, 422 or 500 (after the retries above) is followed at once by
   a fallback request, with no wait, outside *Retries*, within the same
-  *Timeout* (never with less than one second left): first without the file
+  *Timeout* (never with less than one second left, checked again right
+  before it is sent; its connect and read timeouts end at the deadline):
+  first without the file
   parts of earlier messages; then, when the answer is again one of these
   statuses and the question's own files are left, without any file part.
   Before each fallback request the checks of a reply run again (the
@@ -438,7 +445,8 @@ Posts into a task AI chat as the assistant, for n8n "skip, then push" (take
 text is removed as from an answer, with the same labels (contract v1.3,
 "Labels in answers" above: in the internal chat those of its members and
 of the authors of the history the AI reads, 其他 in the customer chat): a
-push left with no text and no file is `empty_message`. Only the
+push left with no text and no file is refused exactly like an empty one
+(`empty_message`). Only the
 assistant answering that chat now may push (same rules as a reply:
 assistant active, connection ready,
 customer chat safe for customers, task active), never while the AI is

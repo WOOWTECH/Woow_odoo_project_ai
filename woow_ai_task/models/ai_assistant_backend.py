@@ -98,11 +98,12 @@ MAX_LABEL_NAME = 80  # characters of a name-only label's name (one_line_name)
 MAX_CLEAN_PASSES = 8  # strip_think passes of clean_answer
 _kind_label_res = {}  # kinds -> compiled "[<kind>]" / "[<kind> <text>]" at a position
 
-_THINK_RE = re.compile(r'<(think|thinking)>.*?</\1\s*>', re.DOTALL | re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r'<(think|thinking)>', re.IGNORECASE)
+_THINK_END_RE = {name: re.compile(r'</%s\s*>' % name, re.IGNORECASE) for name in ('think', 'thinking')}
 _THINK_OPEN_RE = re.compile(r'<(?:think|thinking)>.*$', re.DOTALL | re.IGNORECASE)
 # reasoning without its opening tag: "...</think>answer"
 _THINK_CLOSE_RE = re.compile(r'^.*?</(?:think|thinking)\s*>', re.DOTALL | re.IGNORECASE)
-_SPECIAL_TOKEN_RE = re.compile(r'<\|[a-z0-9_]{1,40}\|>', re.IGNORECASE)
+_SPECIAL_TOKEN_NAME = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')
 _DATA_URI_RE = re.compile(r'(data:[a-z0-9.+-]+/[a-z0-9.+-]+(?:;[a-z0-9.+=-]+)*;base64),([A-Za-z0-9+/]+=*)',
                           re.IGNORECASE)
 
@@ -116,12 +117,62 @@ class BackendError(Exception):
         self.http_status = http_status
 
 
+class GateClosed(BackendError):
+    """A retry was not sent: the run-time gate of contract 3.5 closed during the wait (_http_post)."""
+
+
+def _drop_think_blocks(text):
+    """Remove every closed ``<think>...</think>`` (or ``thinking``) block:
+    from an opening tag to the first closing tag of the same name (white
+    space allowed before its ``>``, any case). Linear in the length of the
+    text: a regex with a lazy ``.*?`` between the tags rescans the rest of the
+    text from every opening tag that has no closing tag, and the text is the
+    backend's."""
+    parts, position, search, unclosed = [], 0, 0, set()
+    while True:
+        opening = _THINK_TAG_RE.search(text, search)
+        if not opening:
+            break
+        name = opening.group(1).lower()
+        closing = None if name in unclosed else _THINK_END_RE[name].search(text, opening.end())
+        if not closing:
+            # no closing tag after this opening tag, so none after a later one either
+            unclosed.add(name)
+            search = opening.start() + 1
+            continue
+        parts.append(text[position:opening.start()])
+        position = search = closing.end()
+    parts.append(text[position:])
+    return ''.join(parts)
+
+
+def _drop_special_tokens(text):
+    """Remove special tokens such as ``<|im_end|>`` (``<|``, 1 to 40 ASCII
+    letters, digits or ``_``, ``|>``), also those that removing an inner one
+    forms (``<|<|x|>x|>``), however deep: one pass, each ``|>`` is checked
+    against what was kept so far. Linear in the length of the text."""
+    if '|>' not in text:
+        return text
+    kept = []
+    for char in text:
+        kept.append(char)
+        if char != '>' or len(kept) < 5 or kept[-2] != '|':
+            continue
+        name_end = len(kept) - 3  # the last character of the name
+        start = name_end
+        while start >= 0 and name_end - start < 40 and kept[start] in _SPECIAL_TOKEN_NAME:
+            start -= 1
+        if 1 <= start < name_end and kept[start] == '|' and kept[start - 1] == '<':
+            del kept[start - 1:]
+    return ''.join(kept)
+
+
 def strip_think(text):
     """Remove reasoning blocks (<think>, <thinking>, also unclosed) and special tokens."""
     if not text:
         return ''
-    text = _SPECIAL_TOKEN_RE.sub('', text)
-    text = _THINK_RE.sub('', text)
+    text = _drop_special_tokens(text)
+    text = _drop_think_blocks(text)
     text = _THINK_OPEN_RE.sub('', text)
     text = _THINK_CLOSE_RE.sub('', text)
     return text.strip()
@@ -1077,7 +1128,8 @@ class WoowProjectAiAssistantBackend(models.Model):
 
     # --- Call ---
 
-    def _http_post(self, url, headers, body, read_timeout, stream=False, max_retries=1, deadline=None):
+    def _http_post(self, url, headers, body, read_timeout, stream=False, max_retries=1, deadline=None,
+                   before_retry=None, connect_timeout=CONNECT_TIMEOUT):
         """POST with explicit timeouts and bounded retries.
 
         Retried (at most ``max_retries`` times, after RETRY_WAITS seconds and
@@ -1091,7 +1143,10 @@ class WoowProjectAiAssistantBackend(models.Model):
         Redirects are never followed: a 3xx is returned like any other answer
         (an http_error for the caller), so the conversation is never re-sent
         to a host or a scheme that endpoint_url_allowed did not check. Reads
-        nothing from the database (no transaction is open here).
+        nothing from the database itself (no transaction is open here);
+        ``before_retry`` (from _call_backend: the run-time gate of contract
+        3.5, then a commit) is asked after each wait, before the request is
+        sent again: False stops the retries (GateClosed).
 
         ``deadline`` is the total time of the answer: a retry's read timeout is
         what is left of it (at least 1 s), so a retry never makes the call wait
@@ -1104,7 +1159,7 @@ class WoowProjectAiAssistantBackend(models.Model):
             attempt_read_timeout = read_timeout
             if deadline and attempt:
                 attempt_read_timeout = min(read_timeout, max(1.0, deadline - time.time()))
-            timeout = (CONNECT_TIMEOUT, attempt_read_timeout)
+            timeout = (connect_timeout, attempt_read_timeout)
             try:
                 response = requests.post(url, data=body, headers=headers, timeout=timeout, stream=stream,
                                          allow_redirects=False)
@@ -1127,9 +1182,12 @@ class WoowProjectAiAssistantBackend(models.Model):
             _logger.info("Project AI assistant %s: %s, retry %s/%s in %s s", self._ids, retry_reason, attempt,
                          max_retries, wait)
             time.sleep(wait)
+            if before_retry is not None and not before_retry():
+                raise GateClosed('error', 'the AI cannot answer any more: not sent again',
+                                 response.status_code if error is None else None)
 
     def _send_and_read(self, url, headers, body, read_timeout, stream, max_retries, deadline, backend_type, labels,
-                       log, result):
+                       log, result, before_retry=None, connect_timeout=CONNECT_TIMEOUT):
         """One request of an answer (its bounded retries included) and what
         it returns, read into ``log`` (HTTP status, response, usage) and
         ``result`` (replies, skip, handoff); raises BackendError. The reply
@@ -1139,9 +1197,9 @@ class WoowProjectAiAssistantBackend(models.Model):
         names, kinds = labels
         try:
             response = self._http_post(url, headers, body, read_timeout, stream=stream, max_retries=max_retries,
-                                       deadline=deadline)
+                                       deadline=deadline, before_retry=before_retry, connect_timeout=connect_timeout)
         except requests.Timeout:
-            raise BackendError('timeout', 'timeout: no answer within %s s' % read_timeout)
+            raise BackendError('timeout', 'timeout: no answer within %s s' % int(read_timeout))
         except requests.RequestException as e:
             raise BackendError('error', 'connection failed (%s)' % type(e).__name__)
         try:
@@ -1155,7 +1213,8 @@ class WoowProjectAiAssistantBackend(models.Model):
                     streamed = self._read_sse(response, deadline)
                 except requests.RequestException as e:
                     if _is_read_timeout(e):
-                        raise BackendError('timeout', 'timeout: no data for %s s while streaming' % read_timeout)
+                        raise BackendError('timeout', 'timeout: no data for %s s while streaming'
+                                           % int(read_timeout))
                     raise BackendError('error', 'stream interrupted (%s)' % type(e).__name__)
                 log['response'] = {'stream': True, 'content': streamed['content'],
                                    'finish_reason': streamed['finish_reason'], 'usage': streamed['usage']}
@@ -1169,7 +1228,7 @@ class WoowProjectAiAssistantBackend(models.Model):
                     raise BackendError('invalid_response', 'invalid response: not JSON')
                 except requests.RequestException as e:
                     if _is_read_timeout(e):
-                        raise BackendError('timeout', 'timeout: no data for %s s' % read_timeout)
+                        raise BackendError('timeout', 'timeout: no data for %s s' % int(read_timeout))
                     raise BackendError('error', 'connection lost (%s)' % type(e).__name__)
                 log['response'] = data
                 if backend_type == 'openai':
@@ -1204,12 +1263,15 @@ class WoowProjectAiAssistantBackend(models.Model):
         parts (inline images, documents in ``file`` mode) and gets HTTP 400,
         413, 415, 422 or 500 (after the usual retries) is followed at once by
         a fallback request, with no wait, outside ``max_retries``, within the
-        same deadline (never with less than FALLBACK_MIN_SECONDS left): first
-        without the file parts of earlier messages, then, when the message
-        being answered still has some, without any (_fallback_drop). Before
-        each one the run-time gate of 3.5 is checked again (``gate``, a
-        callable: True while the job may still ask); when it blocks, nothing
-        more is sent (``gate_blocked``). Each fallback request is built again
+        same deadline (never started with less than FALLBACK_MIN_SECONDS
+        left, checked again right before it is sent; its connect and read
+        timeouts end at the deadline): first without the file parts of
+        earlier messages, then, when the message being answered still has
+        some, without any (_fallback_drop). Before each fallback request, and
+        before a request is sent again after a wait (a refused connection,
+        HTTP 429 or 503), the run-time gate of 3.5 is checked again
+        (``gate``, a callable: True while the job may still ask); when it
+        blocks, nothing more is sent (``gate_blocked``). Each fallback request is built again
         (_build_request: its own current time), with the same choice of
         files minus the ones it leaves out, each its link line and the
         fallback note. Each request writes its own call log row, and only
@@ -1256,13 +1318,24 @@ class WoowProjectAiAssistantBackend(models.Model):
             assistant_id = assistant.id
             if before_call:
                 before_call()  # commits: no transaction stays open during the call
+
+            def before_retry():
+                """Before a request is sent again (a refused connection, HTTP 429 or 503): the run-time gate
+                of 3.5 once more, then the read transaction ends again (before_call)."""
+                allowed = gate is None or gate()
+                if before_call:
+                    before_call()
+                return allowed
+
             started = time.time()
             deadline = started + total_timeout
             first_read_timeout = read_timeout = min(STREAM_IDLE_TIMEOUT, total_timeout) if stream else total_timeout
+            connect_timeout = CONNECT_TIMEOUT
             while True:
                 try:
                     assistant._send_and_read(url, headers, body, read_timeout, stream, max_retries, deadline,
-                                             backend_type, labels, log, result)
+                                             backend_type, labels, log, result, before_retry=before_retry,
+                                             connect_timeout=connect_timeout)
                     break
                 except BackendError as error:
                     drop = error.http_status in FALLBACK_HTTP_STATUSES and plan.get('sent') \
@@ -1276,7 +1349,7 @@ class WoowProjectAiAssistantBackend(models.Model):
                     result['error'] = str(error)
                     log = None
                     if gate is not None and not gate():
-                        # the run-time gate (3.5), checked again as before a retry: nothing more is sent
+                        # the run-time gate (3.5), checked again before a fallback request: nothing more is sent
                         result['gate_blocked'] = True
                         break
                     _logger.info("Project AI assistant %s: HTTP %s to a request with %s file part(s); the turn is "
@@ -1287,12 +1360,17 @@ class WoowProjectAiAssistantBackend(models.Model):
                     url, headers, body, payload = assistant._build_request(
                         channel, history, trigger, plan=plan, link_only=plan['link_only'] | frozenset(drop),
                         files=plan['files'])
-                    log = _new_log()
-                    log['request'] = payload
                     if before_call:
                         before_call()  # the row above and what the request read: no transaction during the call
                     started = time.time()
-                    read_timeout = min(first_read_timeout, max(1.0, deadline - started))
+                    left = deadline - started
+                    if left < FALLBACK_MIN_SECONDS:
+                        break  # never started with less than a second left (3.7): no request, the refusal stands
+                    # the deadline bounds the whole request, the connection too
+                    read_timeout = min(first_read_timeout, left)
+                    connect_timeout = min(CONNECT_TIMEOUT, left)
+                    log = _new_log()
+                    log['request'] = payload
             if log is not None:
                 log['status'] = 'ok'
                 result['error'] = None
@@ -1303,6 +1381,8 @@ class WoowProjectAiAssistantBackend(models.Model):
                     log['http_status'] = e.http_status
                 result['error'] = str(e)
             # else: building a fallback request failed (no request of its own): the refused request's answer stands
+            if isinstance(e, GateClosed):
+                result['gate_blocked'] = True  # a retry was not sent: the job ends as a blocked one
         except Exception as e:  # noqa: BLE001 - every failure becomes an error reply
             # the type name only, in the log too: an exception's text may carry a key, an address or an upstream
             # answer

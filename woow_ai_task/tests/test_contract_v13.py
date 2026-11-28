@@ -257,6 +257,16 @@ class TestLabelsInAnswers(ProjectAiCase):
         for text, expected in cases:
             self.assertEqual(strip_labels(text, names), expected, repr(text))
 
+    def test_deeply_nested_special_tokens(self):
+        def deep(levels):
+            return '<|' * (levels + 1) + 'a|>' * (levels + 1)
+        self.assertEqual(ai_assistant_backend.strip_think(deep(30) + 'ok'), 'ok')
+        self.assertEqual(ai_assistant_backend.clean_answer(deep(12) + '[客戶 x] 好'), '好')
+        chat = self.chat(self.portal)
+        self.post(chat, self.portal, 'hi')
+        result = self.call(chat, openai_ok(deep(15) + '[負責同事 Staff Sam] 好的'))
+        self.assertEqual(result['replies'][0]['text'], '好的')
+
     def test_clean_answer_is_stable(self):
         # a reasoning block that joins the halves of a special token: strip_think again until nothing changes, so
         # the text posted (_prepare_reply runs strip_think again) never starts with a label
@@ -636,7 +646,7 @@ class TestFileFallback(ProjectAiCase):
                     job._run_job(commit=False)
                 self.assertEqual(post.call_count, calls)
                 if calls == 2:
-                    self.assertEqual(post.call_args_list[1].kwargs['timeout'], (10, 1.5))
+                    self.assertEqual(post.call_args_list[1].kwargs['timeout'], (1.5, 1.5), 'connect and read')
                     self.assertEqual(job.state, 'done')
                 else:
                     self.assertEqual(job.state, 'failed')
@@ -706,6 +716,85 @@ class TestFileFallback(ProjectAiCase):
         history = chat._woow_project_ai_history(self.assistant, chat._woow_project_ai_context_messages(self.assistant))
         _url, _headers, _body, payload = self.assistant._build_request(chat, history, third.message_id)
         self.assertEqual(len(file_parts(payload)), 1, 'sent as a file part again')
+
+    def test_the_second_is_checked_again_right_before_sending(self):
+        # 2 s are left when the refusal comes, but building the fallback request takes 1.5 s: not sent
+        chat, _files = self.ask(earlier=[('menu.png', TINY_PNG)])
+        job = self.jobs(chat)[-1]
+        clock = Clock()
+        Assistant = type(self.env['woow.project.ai.assistant'])
+        build = Assistant._build_request
+
+        def slow_build(assistant, *args, **kwargs):
+            if kwargs.get('files') is not None:
+                clock.now += 1.5
+            return build(assistant, *args, **kwargs)
+
+        def refuse(*args, **kwargs):
+            clock.now += 298
+            return refused(400)
+
+        with patch(BACKEND + '.time', clock), patch(BACKEND_POST, side_effect=refuse) as post, \
+                patch.object(Assistant, '_build_request', autospec=True, side_effect=slow_build):
+            job._run_job(commit=False)
+        self.assertEqual(post.call_count, 1, 'less than a second left when it would be sent')
+        self.assertEqual([(log.status, log.http_status) for log in self.logs(job)], [('http_error', 400)])
+        self.assertEqual((job.state, job.error), ('failed', 'HTTP 400'))
+
+    def test_timeouts_in_whole_seconds(self):
+        chat, _files = self.ask(earlier=[('menu.png', TINY_PNG)])
+        job = self.jobs(chat)[-1]
+        clock = Clock()
+        answers = [refused(400), requests.ReadTimeout('slow')]
+
+        def answer(*args, **kwargs):
+            clock.now += 16.5
+            effect = answers.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            return effect
+
+        with patch(BACKEND + '.time', clock), patch(BACKEND_POST, side_effect=answer):
+            job._run_job(commit=False)
+        self.assertEqual(job.error, 'timeout: no answer within 283 s', 'what was left of the deadline, in seconds')
+        self.assertEqual(self.logs(job)[-1].error, 'timeout: no answer within 283 s')
+
+    def test_the_gate_is_checked_again_before_a_retry(self):
+        # HTTP 429: during the wait the connection stops being ready: the request is not sent again
+        chat = self.chat(self.internal)
+        self.post(chat, self.internal, '報價？')
+        job = self.jobs(chat)[-1]
+
+        def wait(seconds):
+            self.connection.model = False  # readiness "blocked": the tab cannot answer
+
+        with patch(BACKEND_POST, side_effect=[refused(429), openai_ok()]) as post, patch(BACKEND_SLEEP, side_effect=wait):
+            job._run_job(commit=False)
+        self.assertEqual(post.call_count, 1, 'not sent again')
+        self.assertEqual(job.state, 'skipped')
+        self.assertEqual([(log.status, log.http_status, log.error) for log in self.logs(job)],
+                         [('error', 429, 'the AI cannot answer any more: not sent again')])
+        notices = self.env['mail.message'].sudo().search([('model', '=', 'discuss.channel'), ('res_id', '=', chat.id),
+                                                          ('message_type', '=', 'notification')])
+        self.assertTrue(notices, 'the blocked notice')
+
+    def test_a_retry_commits_before_it_is_sent(self):
+        chat = self.chat(self.internal)
+        self.post(chat, self.internal, '報價？')
+        history = chat._woow_project_ai_history(self.assistant, chat._woow_project_ai_context_messages(self.assistant))
+        order = []
+        answers = [refused(503), openai_ok('好')]
+
+        def post(*args, **kwargs):
+            order.append('post')
+            return answers.pop(0)
+
+        with patch(BACKEND_POST, side_effect=post), patch(BACKEND_SLEEP):
+            result = self.assistant._call_backend(chat, history, job=self.jobs(chat)[-1],
+                                                  before_call=lambda: order.append('commit'),
+                                                  gate=lambda: order.append('gate') or True)
+        self.assertEqual(order, ['commit', 'post', 'gate', 'commit', 'post'])
+        self.assertFalse(result['error'])
 
     def test_the_deadline_stops_the_fallback(self):
         chat, _files = self.ask(earlier=[('menu.png', TINY_PNG)])
@@ -967,8 +1056,12 @@ class TestPushLabels(AiTaskFixtures, HttpCase):
         status, data = self.push(self.customer_ai, customer, '[其他 Otto]\u00a0[客戶] 稍後回覆。')
         self.assertEqual(status, 200, data)
         self.assertNotIn('其他', str(self.env['mail.message'].sudo().browse(data['message_id']).body))
-        status, data = self.push(self.customer_ai, customer, '[客戶 Customer Carl]')
-        self.assertEqual((status, data['error']), (400, 'empty_message'), 'only a label: refused like an empty text')
+        empty = self.push(self.customer_ai, customer, '')
+        self.assertEqual(empty, (400, {'ok': False, 'error': 'empty_message'}))
+        for text in ('[客戶 Customer Carl]', ' [真人客服]\u200b<think>x</think>', '[其他 Otto]'):
+            self.assertEqual(self.push(self.customer_ai, customer, text), empty, 'only labels: refused like an empty push')
+        # a chat that does not exist: the same answer as an empty push to it
+        self.assertEqual(self.push(self.customer_ai, customer.browse(10 ** 8), '[客戶 x]'), empty)
 
     def test_push_uses_the_names_of_answers(self):
         # the internal chat: a member's label, and the label of a history author who left the chat
@@ -977,6 +1070,7 @@ class TestPushLabels(AiTaskFixtures, HttpCase):
         tina_chat.with_user(self.staff2).sudo().action_unfollow()
         internal = self.open_tab(self.staff, 'internal')
         self.assertEqual(internal, tina_chat)
+        self.assertEqual(self.push(self.internal_ai, internal, '[Staff Tina]'), (400, {'ok': False, 'error': 'empty_message'}))
         for text, kept, gone in (('[Staff Sam] 明天到。', '明天到。', '[Staff Sam]'),
                                  ('[Staff Tina] 我去。', '我去。', '[Staff Tina]'),
                                  ('[Staff Sam] 報價\n[Staff Tina] 安裝', '[Staff Sam] 報價', None)):
