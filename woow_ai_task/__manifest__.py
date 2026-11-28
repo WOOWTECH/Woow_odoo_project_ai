@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Project AI',
-    'version': '18.0.1.1.0',
+    'version': '18.0.1.2.0',
     'category': 'Services/Project',
     'summary': 'Two AI conversations on every task (internal, customer on the portal), answered by n8n or LiteLLM',
     'description': """
@@ -48,7 +48,12 @@ Odoo modules only; it installs next to the Discuss AI modules
 * The AI gets the assistant's prompt, the project text of its tab (the
   internal one while every person of the chat can read the project, as the
   internal chat requires) and a short task summary read with the asker's own access rights
-  (customer tab: the portal-readable task fields only); never the chatter
+  (customer tab: the portal-readable task fields only); never the chatter.
+  Every request carries the current time (the company's time zone, else
+  the asker's, else UTC); a speaker label a model copies to the start of
+  its answer is removed before it is posted; a LiteLLM turn whose file the
+  model cannot read is sent again with the file as a link, and the chat
+  remembers that file (contract v1.3)
 * Durable reply queue in the cron process, typing indicator, files both ways
   (45 s and 100 MB per answer), Markdown replies, push API (n8n "skip, then
   push"), call logs and a permanent monthly usage per project and tab (a

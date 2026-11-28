@@ -16,6 +16,12 @@ cross-product contract, which the Discuss AI module (woow_ai_contact) follows
 too, so one workflow can serve both; nothing is shared with it. The
 ``events`` key is always there, empty (task chats have no events).
 
+Contract v1.3: every request carries the current time (n8n ``now``, a LiteLLM
+system line: _current_time); a speaker label a model copied to the start of
+its answer is removed before the answer is posted (strip_labels); a LiteLLM
+turn whose file the model cannot read is sent again without it, and the
+conversation remembers that file (_call_backend).
+
 Ported from woow_ai_contact 18.0.2.0.0 (``ai_contact_backend.py``), with its
 two backend types only (n8n and LiteLLM) and no conversation events.
 """
@@ -32,6 +38,7 @@ import time
 import unicodedata
 from datetime import datetime, timezone
 
+import pytz
 import requests
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ReadTimeoutError
 
@@ -68,6 +75,28 @@ METADATA_MAX_KEYS = 16
 METADATA_MAX_VALUE = 512
 SSE_CHUNK_SIZE = 1024
 EARLIER_ASSISTANT_PREFIX = '[Messages you (the assistant) sent before this user message]\n'
+# The model (or the route LiteLLM picks) cannot read a file (contract 3.7 "Fallback when the model cannot read a
+# file"): a LiteLLM request with file parts that gets one of these statuses is sent again at once, first without
+# the file parts of earlier messages, then without any; a file left out becomes its [附件] line and this note
+# (literal protocol text, never translated)
+FALLBACK_HTTP_STATUSES = (400, 413, 415, 422, 500)
+FALLBACK_MIN_SECONDS = 1.0  # a fallback request is never started with less time left before the answer's deadline
+FALLBACK_NOTE = '模型無法讀取這個檔案，只附下載連結。'
+# The current time of a request (contract 3.6, 3.7): English day names, whatever the server's locale, and the one
+# system line of LiteLLM (literal protocol text)
+WEEKDAYS = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+TIME_LINE = 'Current time: %s %s (%s), time zone %s (UTC%s).'
+# Labels in answers (contract 3.14): the kinds of speaker label every chat removes from the start of an answer (a
+# chat whose own labels use another kind adds it: discuss.channel._woow_project_ai_label_kinds). A label is
+# "[<kind>]" or "[<kind> <text without ] or a line break>]", the kind followed by "]", a space or U+3000, so
+# "[客戶服務中心]" is no label
+LABEL_KINDS = ('真人客服', '客戶', '負責同事')
+# the white space around labels besides what str.isspace() counts (U+3000 and the no-break spaces included): the
+# zero-width U+200B and U+FEFF
+_LABEL_ZERO_WIDTH = frozenset('\u200b\ufeff')
+MAX_LABEL_NAME = 80  # characters of a name-only label's name (one_line_name)
+MAX_CLEAN_PASSES = 8  # strip_think passes of clean_answer
+_kind_label_res = {}  # kinds -> compiled "[<kind>]" / "[<kind> <text>]" at a position
 
 _THINK_RE = re.compile(r'<(think|thinking)>.*?</\1\s*>', re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(r'<(?:think|thinking)>.*$', re.DOTALL | re.IGNORECASE)
@@ -96,6 +125,144 @@ def strip_think(text):
     text = _THINK_OPEN_RE.sub('', text)
     text = _THINK_CLOSE_RE.sub('', text)
     return text.strip()
+
+
+def _kind_label_re(kinds):
+    """The compiled label of `kinds` where it starts: ``[<kind>]`` or ``[<kind> <text without ] or a line break>]``."""
+    pattern = _kind_label_res.get(kinds)
+    if pattern is None:
+        pattern = _kind_label_res[kinds] = re.compile(r'\[(?:%s)(?:[ \u3000][^\]\r\n]*)?\]' % '|'.join(
+            re.escape(kind) for kind in kinds))
+    return pattern
+
+
+def _skip_label_space(text, position):
+    """The first position from `position` on that is not white space around
+    labels (contract 3.14: what str.isspace() counts, and U+200B, U+FEFF)."""
+    end = len(text)
+    while position < end and (text[position].isspace() or text[position] in _LABEL_ZERO_WIDTH):
+        position += 1
+    return position
+
+
+def _name_label_end(text, position, labels):
+    """The end of a name-only label ``[<name>]`` of `labels` at `position`, or None."""
+    if not labels or not text.startswith('[', position):
+        return None
+    close = text.find(']', position + 1, position + MAX_LABEL_NAME + 2)
+    if close < 0 or text[position:close + 1] not in labels:
+        return None
+    return close + 1
+
+
+def _later_line_has_name_label(text, labels):
+    """True when a line after the first one that is not blank starts (after
+    white space) with one of the name-only `labels`, not as a link text: the
+    answer is then a list of who does what (contract 3.14)."""
+    seen_text = False
+    for line in text.splitlines():
+        start = _skip_label_space(line, 0)
+        if start == len(line):
+            continue  # a blank line
+        if seen_text:
+            end = _name_label_end(line, start, labels)
+            if end is not None and not line.startswith('(', end):
+                return True
+        seen_text = True
+    return False
+
+
+def strip_labels(text, names=(), kinds=()):
+    """An answer without the speaker labels a model copied to its start
+    (contract 3.14 "Labels in answers"), applied after strip_think: while the
+    text starts, after white space (what str.isspace() counts, and U+200B,
+    U+FEFF), with a label ``[<kind>]`` or ``[<kind> <text>]`` (a kind of
+    LABEL_KINDS, or of `kinds`: the other kinds of the chat's own labels,
+    followed by ``]``, a space or U+3000; text without ``]`` or a line break),
+    that label and the white space after it are removed. With `names` (the
+    labels of the people of a chat whose labels carry the name only: the
+    internal chat), a leading ``[<name>]`` of one of them goes too, unless a
+    later line of the answer also starts with one of them (a list of who does
+    what stays as it is). A label directly followed by ``(`` is the text of a
+    Markdown link (``[客戶](https://…)``) and stays. Nothing else changes: a
+    bracket that is no such label, or a label after the start, stays. Pure;
+    linear in the length of the text."""
+    if not text:
+        return ''
+    pattern = _kind_label_re(LABEL_KINDS + tuple(kind for kind in kinds or () if kind not in LABEL_KINDS))
+    labels = {'[%s]' % name for name in names or () if name}
+    if labels and _later_line_has_name_label(text, labels):
+        labels = set()
+    position = 0
+    while True:
+        start = _skip_label_space(text, position)
+        match = pattern.match(text, start)
+        end = match.end() if match else _name_label_end(text, start, labels)
+        if end is None or text.startswith('(', end):
+            return text[position:]
+        position = _skip_label_space(text, end)
+
+
+def clean_answer(text, names=(), kinds=()):
+    """A text the AI posts, as it is posted (contract 3.14): strip_think until
+    it changes nothing more (removing a reasoning block can join the halves of
+    a special token; at most MAX_CLEAN_PASSES passes), then the labels at its
+    start (strip_labels). strip_think leaves the result as it is, so no later
+    step (_prepare_reply) brings a label back to the start."""
+    text = strip_think(text)
+    for _pass in range(MAX_CLEAN_PASSES):
+        again = strip_think(text)
+        if again == text:
+            break
+        text = again
+    return strip_labels(text, names, kinds)
+
+
+def _utcnow():
+    """Now, in UTC (aware): the one clock of the current time a request
+    carries (contract 3.7; tests freeze it here)."""
+    return datetime.now(timezone.utc)
+
+
+def time_zone(name):
+    """The pytz time zone of an IANA name, or None when `name` is not one
+    (pytz, as Odoo checks a time zone)."""
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        return pytz.timezone(name)
+    except Exception:  # noqa: BLE001 - pytz.UnknownTimeZoneError, or a value pytz cannot read: no time zone
+        return None
+
+
+def utc_offset(moment):
+    """The UTC offset of an aware datetime: ``+08:00``, ``-05:00``, ``+05:45``."""
+    minutes = round(moment.utcoffset().total_seconds() / 60)
+    return '%s%02d:%02d' % ('-' if minutes < 0 else '+', abs(minutes) // 60, abs(minutes) % 60)
+
+
+def time_line(now):
+    """The current-time line of the LiteLLM system message (contract 3.7), from
+    the request's ``now`` (_current_time), so that both renderings are one
+    instant: ``Current time: YYYY-MM-DD HH:MM (<weekday>), time zone <tz> (UTC±HH:MM).``"""
+    local = now['local']  # YYYY-MM-DDTHH:MM:SS±HH:MM
+    return TIME_LINE % (local[:10], local[11:16], now['weekday'], now['tz'], local[19:])
+
+
+def current_position(history, trigger_message=None):
+    """History position of the message being answered: the trigger message's
+    entry, else the last user entry (None without one)."""
+    if trigger_message:
+        for position, entry in enumerate(history):
+            if entry.get('message_id') == trigger_message.id:
+                return position
+    return max((position for position, entry in enumerate(history) if entry['role'] == 'user'), default=None)
+
+
+def _new_log():
+    """What one request of an answer writes in its call log row."""
+    return {'status': 'error', 'http_status': None, 'error': None, 'request': None, 'response': None,
+            'usage': None}
 
 
 def redact(data):
@@ -328,6 +495,40 @@ class WoowProjectAiAssistantBackend(models.Model):
         return '\n'.join(lines)
 
     @api.model
+    def _company_time_zone(self):
+        """The current company's time zone (contract 3.7; ``env.company``: the
+        database's main company for a reply job, which runs as the
+        superuser): the time zone of its working schedule (the Resource
+        module, which Project installs; set on the working schedule form, a
+        required field there), else the ``tz`` of its partner (no standard
+        form shows it); None when neither is a known IANA time zone."""
+        company = self.env.company.sudo()
+        if 'resource_calendar_id' in company._fields:
+            zone = time_zone(company.resource_calendar_id.tz)
+            if zone:
+                return zone
+        return time_zone(company.partner_id.tz)
+
+    @api.model
+    def _current_time(self, identity=None):
+        """The current time of one request (contract 3.6, 3.7 "The current
+        time"), computed when the request is built: {'utc', 'local', 'tz',
+        'weekday'}. The time zone is the first one set of: the current
+        company's (_company_time_zone: its working schedule's, else its
+        partner's), the person's own (the identity's ``tz``), UTC; a name that
+        is not a known IANA time zone counts as none. n8n gets it as ``now``,
+        LiteLLM as one system line (time_line); never the metadata."""
+        zone = self._company_time_zone() or time_zone((identity or {}).get('tz')) or pytz.utc
+        utc = _utcnow().astimezone(timezone.utc).replace(microsecond=0)
+        local = utc.astimezone(zone)
+        return {
+            'utc': utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'local': local.strftime('%Y-%m-%dT%H:%M:%S') + utc_offset(local),
+            'tz': zone.zone,
+            'weekday': WEEKDAYS[local.weekday()],
+        }
+
+    @api.model
     def _openai_metadata(self, session_id, identity, surface=None):
         """OpenAI ``metadata``: string keys and string values only (at most 16
         keys, 512 characters each, as the OpenAI API requires). Informational:
@@ -376,21 +577,34 @@ class WoowProjectAiAssistantBackend(models.Model):
     # --- Request building ---
 
     @staticmethod
-    def _inline_images(history):
+    def _inline_images(history, exclude=(), linked=None):
         """Images to inline as data URIs: {(history position, attachment id): data URI}.
 
         Only images of the INLINE_IMAGE_MESSAGES most recent user messages,
         newest first, at most INLINE_IMAGE_MAX_COUNT images and
         INLINE_IMAGE_BUDGET characters in total. The type is sniffed from the
         content (the uploaded mimetype is not trusted).
+
+        The attachments of ``exclude`` (the files the model could not read,
+        3.7) are never inlined and count for nothing; ``linked`` (a set,
+        filled) gets the keys of those that would be one here (in the window,
+        an image type, within the size limit): they become their link line and
+        the fallback note, the others stay as usual (a link line). Their
+        content is not read: the conversation remembers files that were sent
+        as file parts once.
         """
         positions = [i for i, entry in enumerate(history) if entry['role'] == 'user'][-INLINE_IMAGE_MESSAGES:]
         chosen = {}
         budget = INLINE_IMAGE_BUDGET
         for position in reversed(positions):
             for attachment in history[position]['attachments'].sudo():
+                if attachment.id in exclude:
+                    if linked is not None and attachment.mimetype in media.INLINE_IMAGE_TYPES \
+                            and (attachment.file_size or 0) <= INLINE_IMAGE_MAX_BYTES:
+                        linked.add((position, attachment.id))
+                    continue
                 if len(chosen) >= INLINE_IMAGE_MAX_COUNT:
-                    return chosen
+                    continue  # (later remembered files are still listed in `linked`)
                 if (attachment.mimetype not in media.INLINE_IMAGE_TYPES
                         or (attachment.file_size or 0) > INLINE_IMAGE_MAX_BYTES):
                     continue
@@ -413,7 +627,7 @@ class WoowProjectAiAssistantBackend(models.Model):
         """Line telling the model what happened to a document (it never sees an empty gap)."""
         return '[附件說明] %s：%s' % (name, reason)
 
-    def _inline_documents(self, history, mode, data_budget):
+    def _inline_documents(self, history, mode, data_budget, exclude=(), linked=None):
         """Documents of user messages for an openai request (docs/PROTOCOL.md "Documents").
 
         Mode ``file``: every document (PDF, docx, xlsx, xls, csv, txt, md,
@@ -432,6 +646,13 @@ class WoowProjectAiAssistantBackend(models.Model):
         first: at most DOC_MAX_COUNT documents, DOC_FILE_MAX_BYTES each and
         ``data_budget`` data URI characters in total (what the inlined images
         left). Assistant messages are never read.
+
+        The attachments of ``exclude`` (the files the model could not read,
+        3.7) are never a file part and count for nothing: those that would be
+        one here (a document of a recent message, within the size limit, in
+        ``file`` mode) go to ``linked`` (a set, filled): their link line and
+        the fallback note; the others get their usual note (an older message,
+        too large) or none. Their content is not read.
         """
         found = {}
         if mode != 'file':
@@ -448,6 +669,13 @@ class WoowProjectAiAssistantBackend(models.Model):
                 if position not in recent:
                     found[key] = {'note': self._document_note(
                         name, '在較早的訊息中，這次沒有再附上檔案（需要時請使用者重新上傳）。')}
+                    continue
+                if attachment.id in exclude:
+                    if (attachment.file_size or 0) > DOC_FILE_MAX_BYTES:
+                        found[key] = {'note': self._document_note(name, '檔案太大（%s，上限 %s），沒有附上檔案。' % (
+                            media.human_size(attachment.file_size), media.human_size(DOC_FILE_MAX_BYTES)))}
+                    elif linked is not None:
+                        linked.add(key)
                     continue
                 if count >= DOC_MAX_COUNT:
                     found[key] = {'note': self._document_note(
@@ -478,14 +706,50 @@ class WoowProjectAiAssistantBackend(models.Model):
                     'filename': name, 'file_data': prefix + base64.b64encode(raw).decode()}}}
         return found
 
-    def _openai_messages(self, channel, history, identity, base_url):
+    def _openai_messages(self, channel, history, identity, base_url, now=None, link_only=(), plan=None,
+                         files=None):
+        """The ``messages`` of a LiteLLM request: one system message (the
+        assistant's prompt and the surface text, the identity block, the
+        current time: contract 3.7's order), then the turns.
+
+        ``now``: the request's current time (_current_time; computed here when
+        not given). ``link_only``: attachment ids sent as no file part (3.7:
+        the files the model could not read): where one would be a file part,
+        its link line and the fallback note. ``files``: the choice of files
+        of an earlier request of the same turn, (inline, docs, linked), kept
+        as it was (a fallback request, 3.7); None: chosen now. ``plan`` (a
+        dict, filled): what a fallback needs (the choice of files, what was
+        sent as file parts)."""
         self.ensure_one()
         assistant = self.sudo()
+        now = now or assistant._current_time(identity)
         system = [part for part in (channel._woow_project_ai_system_prompt(assistant, history),
-                                    assistant._identity_system_text(identity)) if part]
-        inline = self._inline_images(history)
-        data_budget = INLINE_IMAGE_BUDGET - sum(len(uri) for uri in inline.values())
-        docs = self._inline_documents(history, assistant.connection_id.document_mode or 'link', data_budget)
+                                    assistant._identity_system_text(identity), time_line(now)) if part]
+        system = [{'role': 'system', 'content': '\n\n'.join(system)}]
+        link_only = frozenset(link_only or ())
+        if files is None:
+            linked = set()
+            inline = self._inline_images(history, exclude=link_only, linked=linked)
+            data_budget = INLINE_IMAGE_BUDGET - sum(len(uri) for uri in inline.values())
+            docs = self._inline_documents(history, assistant.connection_id.document_mode or 'link', data_budget,
+                                          exclude=link_only, linked=linked)
+        else:
+            inline, docs, linked = files
+        sent = {}
+        turns = assistant._openai_turns(history, base_url, inline, docs, link_only, sent, linked)
+        if plan is not None:
+            plan.update(files=(inline, docs, linked), link_only=link_only, sent=sent)
+        return system + turns
+
+    def _openai_turns(self, history, base_url, inline, docs, link_only=frozenset(), sent=None, linked=frozenset()):
+        """The turns of a LiteLLM request (normalize_turns): each entry's
+        text, its inline images and document file parts (``inline`` and
+        ``docs``, as _inline_images and _inline_documents chose them), every
+        other file as its signed link line with its note. An attachment of
+        ``link_only`` that would be a file part (chosen, or in ``linked``) is
+        its link line and the fallback note instead (3.7: the model could not
+        read it); one that would not is as usual. ``sent`` (a dict, filled):
+        {attachment id: history position} of every file part of these turns."""
         turns = []
         for position, entry in enumerate(history):
             lines = [entry['text']] if entry['text'] else []
@@ -495,6 +759,10 @@ class WoowProjectAiAssistantBackend(models.Model):
                 key = (position, attachment.id)
                 uri = inline.get(key)
                 doc = docs.get(key)
+                if attachment.id in link_only and (uri or (doc and doc.get('file')) or key in linked):
+                    lines.append(self._attachment_line(self._attachment_info(attachment, base_url)))
+                    lines.append(self._document_note(attachment.name or 'file', FALLBACK_NOTE))
+                    continue
                 if uri:
                     images.append(uri)
                 elif doc and doc.get('file'):
@@ -505,6 +773,9 @@ class WoowProjectAiAssistantBackend(models.Model):
                     lines.append(self._attachment_line(self._attachment_info(attachment, base_url)))
                     if doc and doc.get('note'):
                         lines.append(doc['note'])
+                    continue
+                if sent is not None:
+                    sent[attachment.id] = position
             text = '\n'.join(lines)
             if images or files:
                 content = [{'type': 'text', 'text': text}] if text else []
@@ -513,15 +784,28 @@ class WoowProjectAiAssistantBackend(models.Model):
             else:
                 content = text
             turns.append({'role': entry['role'], 'content': content})
-        messages = [{'role': 'system', 'content': '\n\n'.join(system)}] if system else []
-        return messages + normalize_turns(turns)
+        return normalize_turns(turns)
 
-    def _build_request(self, channel, history, trigger_message=None):
+    @staticmethod
+    def _fallback_drop(plan):
+        """The attachments the next request of a fallback (3.7) leaves out:
+        the file parts of earlier messages; when only the message being
+        answered has some left, all of them."""
+        sent = plan.get('sent') or {}
+        earlier = {attachment_id for attachment_id, position in sent.items() if position != plan.get('current')}
+        return earlier or set(sent)
+
+    def _build_request(self, channel, history, trigger_message=None, plan=None, link_only=None, files=None):
         """Returns (url, headers, body bytes, payload for the call log).
 
         ``trigger_message`` (the message being answered): the requester is
         its author (several people share a task chat), and the task summary
-        of the system prompt is read with their rights."""
+        of the system prompt is read with their rights. The request's current
+        time is computed here, once per request. LiteLLM: ``link_only`` (None:
+        what the conversation remembers, 3.7) and ``files`` (None: chosen now)
+        are given by a fallback request (the same choice of files minus the
+        ones it leaves out); ``plan`` (a dict, filled): what a fallback needs
+        (_openai_messages; the position of the message being answered)."""
         self.ensure_one()
         assistant = self.sudo()
         connection = assistant.connection_id.sudo()
@@ -536,12 +820,17 @@ class WoowProjectAiAssistantBackend(models.Model):
         base_url = channel.get_base_url()
         session_id = self._session_id(channel)
         identity = channel._woow_project_ai_identity(assistant, trigger_message)
+        now = assistant._current_time(identity)
         headers = {'Content-Type': 'application/json'}
         if connection.backend_type == 'openai':
             url = endpoint.rstrip('/') + '/chat/completions'
             headers['Authorization'] = 'Bearer %s' % api_key
+            if link_only is None:
+                # the files of this conversation the model could not read before (3.7 "Fallback")
+                link_only = self.env['woow.project.ai.job'].sudo()._unreadable_files_of(channel)
             payload = {
-                'messages': assistant._openai_messages(channel, history, identity, base_url),
+                'messages': assistant._openai_messages(channel, history, identity, base_url, now=now,
+                                                       link_only=link_only, plan=plan, files=files),
                 'user': session_id,
                 'metadata': assistant._openai_metadata(session_id, identity,
                                                        surface=channel._woow_project_ai_surface_info()),
@@ -556,21 +845,25 @@ class WoowProjectAiAssistantBackend(models.Model):
                 payload['stream_options'] = {'include_usage': True}
                 headers['Accept'] = 'text/event-stream'
             body = _json_dumps(payload).encode()
+            if plan is not None:
+                plan['current'] = current_position(history, trigger_message)
         else:
             # n8n: the API key is only the optional signing secret, never sent
             # (n8n stores the webhook headers of every execution); without one
             # (e.g. a public Chat Trigger) the request is not signed
             url = endpoint
-            payload = assistant._n8n_payload(channel, history, identity, session_id, base_url, trigger_message)
+            payload = assistant._n8n_payload(channel, history, identity, session_id, base_url, trigger_message,
+                                             now=now)
             body = _json_dumps(payload).encode()
             if api_key:
                 headers.update(_signature_headers(api_key, body))
         return url, headers, body, payload
 
-    def _n8n_payload(self, channel, history, identity, session_id, base_url, trigger_message=None):
+    def _n8n_payload(self, channel, history, identity, session_id, base_url, trigger_message=None, now=None):
         """n8n webhook body (docs/PROTOCOL.md), plus the fields an n8n Chat
         Trigger reads (``action``, ``sessionId``, ``chatInput``); a
-        Webhook-node workflow ignores them."""
+        Webhook-node workflow ignores them. ``now``: the request's current
+        time (_current_time; computed here when not given)."""
         self.ensure_one()
         assistant = self.sudo()
 
@@ -607,12 +900,14 @@ class WoowProjectAiAssistantBackend(models.Model):
             'history': [entry_json(e) for e in past],
             # events of the conversation (the contract's key, always present): task chats have none
             'events': [],
+            # the current time (contract 3.6, 3.7): {utc, local, tz, weekday}
+            'now': now or assistant._current_time(identity),
         }
 
     # --- Response parsing ---
 
     @staticmethod
-    def _openai_text(data):
+    def _openai_text(data, names=(), kinds=()):
         if not isinstance(data, dict) or not isinstance(data.get('choices'), list) or not data['choices']:
             raise BackendError('invalid_response', "invalid response: no 'choices'")
         message = (data['choices'][0] or {}).get('message') or {}
@@ -623,7 +918,7 @@ class WoowProjectAiAssistantBackend(models.Model):
                 if isinstance(part, dict) and part.get('type') in ('text', 'output_text'))
         if content is not None and not isinstance(content, str):
             raise BackendError('invalid_response', 'invalid response: content is not text')
-        return strip_think(content or '')
+        return clean_answer(content or '', names, kinds)
 
     @staticmethod
     def _sse_lines(response, deadline, watchdog=None):
@@ -721,7 +1016,7 @@ class WoowProjectAiAssistantBackend(models.Model):
                 'finish_reason': state['finish_reason'], 'done': state['done']}
 
     @staticmethod
-    def _n8n_replies(data):
+    def _n8n_replies(data, names=(), kinds=()):
         """n8n JSON -> (replies, skip).
 
         Accepted: ``{"skip": true}``,
@@ -761,7 +1056,7 @@ class WoowProjectAiAssistantBackend(models.Model):
             attachments = item.get('attachments') or []
             if not isinstance(text, str) or not isinstance(attachments, list):
                 raise BackendError('invalid_response', 'invalid response: bad reply fields')
-            replies.append({'text': strip_think(text), 'attachments': attachments})
+            replies.append({'text': clean_answer(text, names, kinds), 'attachments': attachments})
         return replies, False
 
     @staticmethod
@@ -833,26 +1128,125 @@ class WoowProjectAiAssistantBackend(models.Model):
                          max_retries, wait)
             time.sleep(wait)
 
-    def _call_backend(self, channel, history, job=None, before_call=None):
+    def _send_and_read(self, url, headers, body, read_timeout, stream, max_retries, deadline, backend_type, labels,
+                       log, result):
+        """One request of an answer (its bounded retries included) and what
+        it returns, read into ``log`` (HTTP status, response, usage) and
+        ``result`` (replies, skip, handoff); raises BackendError. The reply
+        texts lose the labels a model copied (clean_answer with ``labels``:
+        the chat's (names, kinds)), a streamed answer as a whole once it
+        ended. Reads nothing from the database (no transaction is open here)."""
+        names, kinds = labels
+        try:
+            response = self._http_post(url, headers, body, read_timeout, stream=stream, max_retries=max_retries,
+                                       deadline=deadline)
+        except requests.Timeout:
+            raise BackendError('timeout', 'timeout: no answer within %s s' % read_timeout)
+        except requests.RequestException as e:
+            raise BackendError('error', 'connection failed (%s)' % type(e).__name__)
+        try:
+            log['http_status'] = response.status_code
+            if response.status_code != 200:
+                _logger.warning("Project AI assistant %s: backend HTTP %s", self.id, response.status_code)
+                raise BackendError('http_error', 'HTTP %s' % response.status_code, response.status_code)
+            content_type = (response.headers.get('Content-Type') or '').lower()
+            if stream and 'text/event-stream' in content_type:
+                try:
+                    streamed = self._read_sse(response, deadline)
+                except requests.RequestException as e:
+                    if _is_read_timeout(e):
+                        raise BackendError('timeout', 'timeout: no data for %s s while streaming' % read_timeout)
+                    raise BackendError('error', 'stream interrupted (%s)' % type(e).__name__)
+                log['response'] = {'stream': True, 'content': streamed['content'],
+                                   'finish_reason': streamed['finish_reason'], 'usage': streamed['usage']}
+                log['usage'] = streamed['usage']
+                # the labels of the whole answer, once the stream ended (never per delta)
+                text = clean_answer(streamed['content'], names, kinds)
+            else:
+                try:
+                    data = response.json()
+                except ValueError:
+                    raise BackendError('invalid_response', 'invalid response: not JSON')
+                except requests.RequestException as e:
+                    if _is_read_timeout(e):
+                        raise BackendError('timeout', 'timeout: no data for %s s' % read_timeout)
+                    raise BackendError('error', 'connection lost (%s)' % type(e).__name__)
+                log['response'] = data
+                if backend_type == 'openai':
+                    log['usage'] = data.get('usage') if isinstance(data, dict) else None
+                    text = self._openai_text(data, names, kinds)
+                else:
+                    text = None
+                    result['replies'], result['skip'] = self._n8n_replies(data, names, kinds)
+                    result['handoff'], result['handoff_reason'] = self._n8n_handoff(data)
+                    if not result['skip'] and not result['handoff'] \
+                            and not any(r['text'] or r['attachments'] for r in result['replies']):
+                        raise BackendError('invalid_response', 'empty reply')
+            if text is not None:
+                if not text:
+                    raise BackendError('invalid_response', 'empty reply')
+                result['replies'] = [{'text': text, 'attachments': []}]
+        finally:
+            close = getattr(response, 'close', None)
+            if close:
+                close()
+
+    def _call_backend(self, channel, history, job=None, before_call=None, gate=None):
         """Call the backend once (bounded retries aside) and log the call.
+
+        A speaker label the model copied to the start of a reply text is
+        removed (clean_answer with the chat's labels:
+        discuss.channel._woow_project_ai_answer_labels), before the
+        empty-answer rule.
+
+        LiteLLM, when the model cannot read a file (contract 3.7 "Fallback
+        when the model cannot read a file"): a request that carries file
+        parts (inline images, documents in ``file`` mode) and gets HTTP 400,
+        413, 415, 422 or 500 (after the usual retries) is followed at once by
+        a fallback request, with no wait, outside ``max_retries``, within the
+        same deadline (never with less than FALLBACK_MIN_SECONDS left): first
+        without the file parts of earlier messages, then, when the message
+        being answered still has some, without any (_fallback_drop). Before
+        each one the run-time gate of 3.5 is checked again (``gate``, a
+        callable: True while the job may still ask); when it blocks, nothing
+        more is sent (``gate_blocked``). Each fallback request is built again
+        (_build_request: its own current time), with the same choice of
+        files minus the ones it leaves out, each its link line and the
+        fallback note. Each request writes its own call log row, and only
+        one; the answer is the first success. The files the request that
+        succeeded left out are remembered on the job (``unreadable_files``,
+        with what the conversation remembered before: each job that asks
+        carries the whole set): later requests of the conversation send them
+        as links where they would be file parts. Without a success the turn
+        fails as without the fallback, and nothing new is remembered.
 
         Returns:
             dict: replies (list of {'text', 'attachments'}), skip (bool),
                 handoff (bool: the n8n answer asked for a human, see
                 _n8n_handoff), handoff_reason (str or None), error (short
-                text or None), call_log (woow.project.ai.call.log)
+                text or None), gate_blocked (True when the gate stopped a
+                fallback request), unreadable_files (the attachment ids this
+                call wrote on the job, when it wrote some), call_log
+                (woow.project.ai.call.log: the row of the last request sent)
         """
         self.ensure_one()
         assistant = self.sudo()
         connection = assistant.connection_id.sudo()
         trigger = job.message_id if job else None
         started = time.time()
-        log = {'status': 'error', 'http_status': None, 'error': None, 'request': None, 'response': None,
-               'usage': None}
+        # what the request being built or sent writes in its row; None while no request is pending since the last
+        # row written (a refused request's: last_row)
+        log = _new_log()
+        last_row = self.env['woow.project.ai.call.log']
         result = {'replies': [], 'skip': False, 'handoff': False, 'handoff_reason': None, 'error': None}
+        plan = {}
+        remembered, dropped = frozenset(), set()
         try:
-            url, headers, body, payload = assistant._build_request(channel, history, trigger)
+            url, headers, body, payload = assistant._build_request(channel, history, trigger, plan=plan)
+            remembered = frozenset(plan.get('link_only') or ())
             log['request'] = payload
+            # the chat's speaker labels a model may copy (3.14): name-only ones (the internal chat), other kinds
+            labels = channel._woow_project_ai_answer_labels(history) if channel else (frozenset(), ())
             total_timeout = connection.timeout_seconds or 300
             backend_type = connection.backend_type
             if backend_type == 'n8n':
@@ -864,73 +1258,70 @@ class WoowProjectAiAssistantBackend(models.Model):
                 before_call()  # commits: no transaction stays open during the call
             started = time.time()
             deadline = started + total_timeout
-            read_timeout = min(STREAM_IDLE_TIMEOUT, total_timeout) if stream else total_timeout
-            try:
-                response = assistant._http_post(url, headers, body, read_timeout, stream=stream,
-                                              max_retries=max_retries, deadline=deadline)
-            except requests.Timeout:
-                raise BackendError('timeout', 'timeout: no answer within %s s' % read_timeout)
-            except requests.RequestException as e:
-                raise BackendError('error', 'connection failed (%s)' % type(e).__name__)
-            try:
-                log['http_status'] = response.status_code
-                if response.status_code != 200:
-                    _logger.warning("Project AI assistant %s: backend HTTP %s", assistant_id, response.status_code)
-                    raise BackendError('http_error', 'HTTP %s' % response.status_code, response.status_code)
-                content_type = (response.headers.get('Content-Type') or '').lower()
-                if stream and 'text/event-stream' in content_type:
-                    try:
-                        streamed = assistant._read_sse(response, deadline)
-                    except requests.RequestException as e:
-                        if _is_read_timeout(e):
-                            raise BackendError('timeout', 'timeout: no data for %s s while streaming' % read_timeout)
-                        raise BackendError('error', 'stream interrupted (%s)' % type(e).__name__)
-                    log['response'] = {'stream': True, 'content': streamed['content'],
-                                       'finish_reason': streamed['finish_reason'], 'usage': streamed['usage']}
-                    log['usage'] = streamed['usage']
-                    text = strip_think(streamed['content'])
-                else:
-                    try:
-                        data = response.json()
-                    except ValueError:
-                        raise BackendError('invalid_response', 'invalid response: not JSON')
-                    except requests.RequestException as e:
-                        if _is_read_timeout(e):
-                            raise BackendError('timeout', 'timeout: no data for %s s' % read_timeout)
-                        raise BackendError('error', 'connection lost (%s)' % type(e).__name__)
-                    log['response'] = data
-                    if backend_type == 'openai':
-                        log['usage'] = data.get('usage') if isinstance(data, dict) else None
-                        text = assistant._openai_text(data)
-                    else:
-                        text = None
-                        result['replies'], result['skip'] = assistant._n8n_replies(data)
-                        result['handoff'], result['handoff_reason'] = assistant._n8n_handoff(data)
-                        if not result['skip'] and not result['handoff'] \
-                                and not any(r['text'] or r['attachments'] for r in result['replies']):
-                            raise BackendError('invalid_response', 'empty reply')
-                if text is not None:
-                    if not text:
-                        raise BackendError('invalid_response', 'empty reply')
-                    result['replies'] = [{'text': text, 'attachments': []}]
-            finally:
-                close = getattr(response, 'close', None)
-                if close:
-                    close()
-            log['status'] = 'ok'
+            first_read_timeout = read_timeout = min(STREAM_IDLE_TIMEOUT, total_timeout) if stream else total_timeout
+            while True:
+                try:
+                    assistant._send_and_read(url, headers, body, read_timeout, stream, max_retries, deadline,
+                                             backend_type, labels, log, result)
+                    break
+                except BackendError as error:
+                    drop = error.http_status in FALLBACK_HTTP_STATUSES and plan.get('sent') \
+                        and deadline - time.time() >= FALLBACK_MIN_SECONDS and assistant._fallback_drop(plan)
+                    if not drop:
+                        raise
+                    # the refused request's own row (http_error), its only one; its error is the turn's unless a
+                    # fallback request answers
+                    log['status'], log['error'] = error.status, str(error)
+                    last_row = assistant._create_call_log(channel, job, log, int((time.time() - started) * 1000))
+                    result['error'] = str(error)
+                    log = None
+                    if gate is not None and not gate():
+                        # the run-time gate (3.5), checked again as before a retry: nothing more is sent
+                        result['gate_blocked'] = True
+                        break
+                    _logger.info("Project AI assistant %s: HTTP %s to a request with %s file part(s); the turn is "
+                                 "sent again at once without %s of them", assistant_id, error.http_status,
+                                 len(plan['sent']), len(drop))
+                    dropped |= drop
+                    # built again (its own current time), the same choice of files minus the ones left out
+                    url, headers, body, payload = assistant._build_request(
+                        channel, history, trigger, plan=plan, link_only=plan['link_only'] | frozenset(drop),
+                        files=plan['files'])
+                    log = _new_log()
+                    log['request'] = payload
+                    if before_call:
+                        before_call()  # the row above and what the request read: no transaction during the call
+                    started = time.time()
+                    read_timeout = min(first_read_timeout, max(1.0, deadline - started))
+            if log is not None:
+                log['status'] = 'ok'
+                result['error'] = None
         except BackendError as e:
-            log['status'], log['error'] = e.status, str(e)
-            if e.http_status:
-                log['http_status'] = e.http_status
-            result['error'] = str(e)
+            if log is not None:
+                log['status'], log['error'] = e.status, str(e)
+                if e.http_status:
+                    log['http_status'] = e.http_status
+                result['error'] = str(e)
+            # else: building a fallback request failed (no request of its own): the refused request's answer stands
         except Exception as e:  # noqa: BLE001 - every failure becomes an error reply
             # the type name only, in the log too: an exception's text may carry a key, an address or an upstream
             # answer
             log_unexpected(_logger, "Project AI assistant %s: backend call failed", (assistant.id,), e)
-            log['status'], log['error'] = 'error', type(e).__name__
-            result['error'] = log['error']
-        duration_ms = int((time.time() - started) * 1000)
-        result['call_log'] = assistant._create_call_log(channel, job, log, duration_ms)
+            if log is not None:
+                log['status'], log['error'] = 'error', type(e).__name__
+                result['error'] = log['error']
+        if log is not None:
+            result['call_log'] = assistant._create_call_log(channel, job, log, int((time.time() - started) * 1000))
+        else:
+            result['call_log'] = last_row
+        if job and plan.get('files') is not None:
+            # the conversation remembers (3.7): what it knew, plus the files the request that got the answer left
+            # out (none when no request succeeded). Every job that asks carries the whole set (the cleanup keeps
+            # the newest of them, woow.project.ai.job._cleanup_old_jobs); a retry of this job reads it too
+            succeeded = log is not None and log['status'] == 'ok'
+            files = remembered | (dropped if succeeded else set())
+            if files and job._remember_unreadable_files(files):
+                result['unreadable_files'] = sorted(files)
         return result
 
     # --- Call log ---

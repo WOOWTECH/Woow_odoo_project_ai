@@ -448,8 +448,9 @@ class TestN8nJob(ProjectAiCase):
             run(self.jobs(chat)[-1])
         body = json.loads(post.call_args.kwargs['data'])
         self.assertEqual(set(body), {'event', 'session_id', 'action', 'sessionId', 'chatInput', 'assistant', 'user',
-                                     'channel', 'surface', 'system_prompt', 'message', 'history', 'events'})
+                                     'channel', 'surface', 'system_prompt', 'message', 'history', 'events', 'now'})
         self.assertEqual(body['events'], [])
+        self.assertEqual(set(body['now']), {'utc', 'local', 'tz', 'weekday'}, 'the current time (contract v1.3)')
         # the portal user follows the task, not the project: no project in the surface (team review 34)
         self.assertEqual(body['surface'], {'type': 'project_task', 'project_id': None,
                                            'task_id': self.task.id, 'tab': 'customer'})

@@ -1695,6 +1695,53 @@ class DiscussChannel(models.Model):
             history.append(entry)
         return history
 
+    def _woow_project_ai_answer_labels(self, history=None, assistant=None):
+        """Labels in answers (contract 3.14): the speaker labels of this chat a
+        model may copy to the start of an answer or a pushed text, as
+        (names, kinds) for ai_assistant_backend.clean_answer: the name-only
+        labels of its people (_woow_project_ai_label_names) and the kinds of
+        its own labels besides the ones every chat removes
+        (_woow_project_ai_label_kinds). Without `history`, the conversation as
+        the AI would read it now (`assistant`: the chat's AI assistant)."""
+        self.ensure_one()
+        if history is None and self.sudo().woow_project_ai_tab == TAB_INTERNAL:
+            assistant = assistant or self._woow_project_ai_tab_assistant()
+            history = self._woow_project_ai_history(assistant, self._woow_project_ai_context_messages(assistant)) \
+                if assistant else []
+        return self._woow_project_ai_label_names(history), self._woow_project_ai_label_kinds()
+
+    def _woow_project_ai_label_kinds(self):
+        """The kinds of this chat's own speaker labels that not every chat
+        removes from an answer (contract 3.14: a product that labels people
+        with another kind removes it where it uses it): the customer chat's
+        其他 (a person who is neither a colleague nor a portal user); none in
+        the internal chat, whose labels carry the name only."""
+        self.ensure_one()
+        return (OTHER_KIND,) if self.sudo().woow_project_ai_tab == TAB_CUSTOMER else ()
+
+    def _woow_project_ai_label_names(self, history=None):
+        """The name-only labels of this chat's people (contract 3.14), for the
+        internal chat, whose labels are ``[<name>] ``: the one-line names of its
+        members (not the AI bots) and of the authors of the people's turns of
+        `history` (a person who left still has turns there). An answer that
+        starts with ``[<one of them>]`` loses it (ai_assistant_backend
+        .strip_labels), unless a later line also starts with one. Empty in the
+        customer chat: its labels start with a kind (客戶, 負責同事, 其他), which
+        _woow_project_ai_label_kinds and the kinds every chat removes cover."""
+        self.ensure_one()
+        channel = self.sudo()
+        if channel.woow_project_ai_tab != TAB_INTERNAL:
+            return frozenset()
+        bots = channel._woow_project_ai_bot_partner_ids()
+        names = {one_line_name(partner.name) for partner in channel.channel_member_ids.partner_id
+                 if partner.id not in bots}
+        ids = [entry['message_id'] for entry in history or () if entry.get('role') == 'user'
+               and entry.get('message_id')]
+        for message in self.env['mail.message'].sudo().browse(ids).exists():
+            names.add(self._woow_project_ai_author_name(message))
+        names.discard('')
+        return frozenset(names)
+
     def _woow_project_ai_system_prompt(self, assistant, history):
         """System prompt sent to the backend: the instructions first, then one
         data section last (docs/PROTOCOL.md "system prompt").

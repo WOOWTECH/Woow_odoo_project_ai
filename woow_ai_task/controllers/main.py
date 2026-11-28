@@ -17,6 +17,7 @@ from werkzeug.exceptions import NotFound
 from odoo import http, SUPERUSER_ID
 from odoo.http import request
 
+from ..models.ai_assistant_backend import clean_answer
 from ..tools import media
 
 _logger = logging.getLogger(__name__)
@@ -111,6 +112,11 @@ class WoowProjectAiController(http.Controller):
             return fail(403, 'not_allowed', channel=channel)
         if channel._woow_project_ai_is_paused():
             return fail(409, 'paused', channel=channel)
+        # a text the AI posts: a speaker label the workflow's model copied to its start goes, as from an answer
+        # (contract 3.14 "Labels in answers": the same labels, those of the chat's members and history authors in
+        # the internal chat, 其他 in the customer chat); a text of labels only is refused like an empty one (below)
+        names, kinds = channel._woow_project_ai_answer_labels(assistant=assistant)
+        text = clean_answer(text, names, kinds)
         prepared = assistant._prepare_reply({'text': text, 'attachments': attachments}, channel=channel)
         if not str(prepared['html']).strip() and not prepared['files']:
             return fail(400, 'empty_message', 'no text and no usable attachment', channel=channel)

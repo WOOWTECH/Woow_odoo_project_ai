@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Contract v1.2 (docs/CONTRACT.md): the shared checks of tests/contract/harness.py, run against this
+"""Contract v1.3 (docs/CONTRACT.md): the shared checks of tests/contract/harness.py, run against this
 module's own code. docs/CONTRACT.md and tests/contract/ are copied byte for byte from the contract package
 (its README): never edit them here.
 
@@ -9,7 +9,9 @@ the task summary of the instructions lists the assignees as data, so the person'
 identity block only, after the kind of account); the assistant is the project's internal one. Every speaker
 of the internal chat is an employee: the speaker label carries the name only (``[<name>] ``, none for a name
 with an '@'), as CONTRACT.md 3.14 allows (contract_speaker_kind ''). The customer chat's labels
-(``[客戶 <name>] ``, ``[負責同事 <name>] ``, ``[客戶] `` without a name) are tested by the module's own suite.
+(``[客戶 <name>] ``, ``[負責同事 <name>] ``, ``[客戶] `` without a name) are tested by the module's own suite,
+and so are the rules the checks leave to it (CONTRACT.md 5): the time zone of the current time, the name-only
+labels in answers, and the file fallback beyond check 15 (tests/test_contract_v13.py).
 """
 
 import base64
@@ -120,6 +122,12 @@ class TestContract(ContractChecks, ProjectAiCase):
         jobs = self.Job.search([('channel_id', '=', channel.id)], order='id')
         for job in jobs:
             job._run_job(commit=False)
+        if spec.get('twice'):  # check 15: the person asks again in the same conversation, its job runs once
+            self.env.invalidate_all()
+            self._contract_post(channel, user, spec['text'])
+            for job in self.Job.search([('channel_id', '=', channel.id), ('id', 'not in', jobs.ids)], order='id'):
+                job._run_job(commit=False)
+            jobs = self.Job.search([('channel_id', '=', channel.id)], order='id')
         self.env.invalidate_all()
         logs = self.env['woow.project.ai.call.log'].search([('channel_id', '=', channel.id)])
         texts = [name for name, field in logs._fields.items() if field.type in ('char', 'text', 'html')]
@@ -195,7 +203,7 @@ class TestContract(ContractChecks, ProjectAiCase):
         return {'jobs': self.Job.search_count([('channel_id', '=', channel.id)]),
                 'notices': notices.mapped('message_type')}
 
-    # --- the fourteen checks (Odoo collects only the test methods a class defines itself) ---
+    # --- the fifteen checks (Odoo collects only the test methods a class defines itself) ---
 
     def test_contract_01_answers(self):
         self.contract_check_01_answers()
@@ -238,3 +246,6 @@ class TestContract(ContractChecks, ProjectAiCase):
 
     def test_contract_14_job_rows(self):
         self.contract_check_14_job_rows()
+
+    def test_contract_15_file_fallback(self):
+        self.contract_check_15_file_fallback()
